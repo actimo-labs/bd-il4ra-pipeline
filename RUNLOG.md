@@ -134,3 +134,98 @@ Next, in order (cheapest hard blockers first):
 5. **User, gate G0:** confirm whether NovaDDE supports paired VH/VL. The public example is
    a VHH, which cannot be submitted -- the template requires both chains. VHH-only -> Arm B
    is dead -> rung F2.
+
+---
+
+## 2026-11-21 12:28–12:40 UTC (23:28 AEDT) — OVERNIGHT SESSION START. Weight host probe + RFantibody install
+Gate: G1 (in progress)  |  Rung: F0  |  T-64.5h
+
+**Mode:** unattended overnight run per `OVERNIGHT_ADDENDUM.md`. User asleep until ~08:00
+AEDT. All ambiguity resolved by the agent and logged here. Zero Geodesic credits spent;
+Arm B left `not_started` per the addendum.
+
+### Action 1 — RFantibody weight host reachability (SETUP_RFANTIBODY.md Step 0). PASS.
+
+Intent: the weights come from an institutional host (IPD/UW), not GitHub/PyPI. Only RCSB,
+PyPI and GitHub were verified reachable from this box. A block here kills the local arm.
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' https://github.com/RosettaCommons/RFantibody   # 200
+git clone --depth 1 https://github.com/RosettaCommons/RFantibody /tmp/rfab-probe
+grep -Eo 'https?://[^ "'"'"']+' include/download_weights.sh
+curl -sSI --max-time 25 https://files.ipd.uw.edu/pub/RFantibody/<each>.pt | head -1
+```
+
+Result — **all weight hosts reachable**:
+
+| URL | HTTP | content-length |
+|---|---|---|
+| `files.ipd.uw.edu/pub/RFantibody/RFdiffusion_Ab.pt` | **200** | 483,452,922 |
+| `files.ipd.uw.edu/pub/RFantibody/RF2_ab.pt` | **200** | 294,759,918 |
+| `files.ipd.uw.edu/pub/RFantibody/ProteinMPNN_v48_noise_0.2.pt` | **200** | 6,681,301 |
+| `zenodo.org/records/17488258/...RFab_noframework...pt` (RF2 **TCR**) | **200** | 882,991,901 |
+
+**Conclusion: the local arm is alive. Rung stays F0 (Arm A live; Arm B deferred, not dead).**
+No egress-allowlist decision needed from the user. That parked item is moot for Arm A.
+
+**Decision (agent, logged for reversal):** skipped the 883 MB Zenodo **RF2 TCR** weight.
+`grep -rn` over `src/`, `scripts/` shows it is referenced **nowhere** in the codebase —
+only `include/download_weights.sh` fetches it. It is for TCR design, not antibody design.
+Saves 883 MB and ~2 min. Reversible: re-run the wget line if an RF2 config ever asks for it.
+Downloaded the other three directly rather than via `download_weights.sh` (the script's
+`&&` chain would have forced the TCR download too).
+
+### Action 2 — scratch + env file (Step 1). DONE.
+
+`/mnt/comp5data/bd-il4r/env.sh` written and is the sourceable env for every later session:
+`BDIL4R`, `UV_CACHE_DIR`, `UV_PYTHON_INSTALL_DIR`, `PIP_CACHE_DIR`, `TORCH_HOME`,
+`HF_HOME`, `XDG_CACHE_HOME` all redirected to scratch; `PATH` += `~/.local/bin`;
+`DGLBACKEND=pytorch` (silences a DGL backend warning on every import).
+
+Disk, before and after the whole install:
+
+```
+BEFORE  /dev/sda1 2.0T 1.9T  25G 99% /          /dev/sdb 984G 6.9G 977G 1% /mnt/comp5data
+AFTER   /dev/sda1 2.0T 1.9T  25G 99% /          /dev/sdb 984G  14G 970G 2% /mnt/comp5data
+```
+
+**Root did not move.** The cache redirection worked; ~7 GB landed on scratch as intended.
+
+### Action 3 — install (Steps 2–3). DONE in ~6 min against a 3-hour time box.
+
+- RFantibody commit SHA: **`efe4b9040f051edc229e9318ead586ff76236c9b`**
+- `uv` 0.13.9 installed to `~/.local/bin`; `uv cache dir` confirmed `=/mnt/comp5data/bd-il4r/uv-cache`
+- `uv sync`: **24.4 s**. Resolved torch **2.3.1+cu118**, torchvision 0.18.1+cu118,
+  torchaudio 2.3.1+cu118, triton 2.3.1, numpy 1.x, dgl **2.4.0+cu118**, hydra-core,
+  biotite, e3nn, pandas 2.3.3. venv at `$BDIL4R/rfantibody/.venv` (on scratch).
+
+**CUDA verification — the silent-CPU-fallback check:**
+
+```
+torch 2.3.1+cu118
+cuda_available True          <-- REQUIRED. confirmed, not inferred
+device NVIDIA A100-SXM4-80GB
+dgl 2.4.0+cu118
+matmul ok True               <-- real GPU tensor op executed
+```
+
+**Correction to `SETUP_RFANTIBODY.md` Step 3 — the DGL warning is now stale.** The doc
+says DGL "must come from CUDA-enabled wheels, and it is the most common install failure
+in this stack", implying a separate manual step. At commit `efe4b90` that is **already
+fixed upstream**: `pyproject.toml` pins dgl to a wheel hosted on the RFantibody GitHub
+releases page (`deps-dgl-2.4.0/dgl-2.4.0+cu118-cp310-cp310-manylinux1_x86_64.whl`),
+because the original dgl.ai host went away. `uv sync` handles it with no manual step.
+No action needed; flagging so nobody hunts for a problem that no longer exists.
+
+### Known-bad paths confirmed present (Step 4) — to patch before first run
+
+`grep` confirms both documented traps are real at this commit:
+
+```
+src/rfantibody/rf2/config/base.yaml:18:  model_weights: /home/weights/RF2_ab.pt
+scripts/proteinmpnn_interface_design.py:45: ... '/home/weights/ProteinMPNN_v48_noise_0.2.pt'
+```
+
+Both are Docker-internal paths that do not exist in a `uv` local install. Third trap
+(`model_runners.py` checkpoint default) still to be checked. Patching next.
+
