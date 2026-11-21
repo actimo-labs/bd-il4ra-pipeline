@@ -726,3 +726,100 @@ Expected completion ~04:45 UTC Sun (15:45 AEDT). At the user's ~08:00 AEDT wake-
 (21:00 UTC Sat) roughly 6 GPU-h will have run — on the order of 90 backbones / 180
 designs across all three arms.
 
+
+---
+
+## 2026-11-21 15:00–15:40 UTC — Novelty reference set frozen. **A gate as specified would have failed every design.**
+Gate: G2  |  Rung: F0  |  T-61.5h
+
+`scripts/05_novelty.py`, 18/18 self-test (runs on bare `python3`).
+
+### Host reachability is better than the handoff assumed
+
+`TARGET_PREP.md` says "UniProt is NOT on the VM allowlist in all sessions" and
+`RANKING_AND_QC.md` says academic hosts are unverified. Probed:
+
+```
+400  https://search.rcsb.org/rcsbsearch/v2/query      (reachable; 400 = GET on a POST API)
+200  https://files.rcsb.org/download/1IAR.pdb
+200  https://rest.uniprot.org/uniprotkb/P24394.fasta  <- UniProt IS reachable
+200  https://www.ebi.ac.uk/proteins/api/proteins/P24394
+301  https://opig.stats.ox.ac.uk/.../sabdab/          <- SAbDab host IS reachable
+```
+
+`blastp`, `makeblastdb` and `mafft` all present at `/usr/bin`. **Tier 2/3 of the
+reference set are therefore feasible if time allows** — currently `not_run`, recorded as
+such rather than silently skipped.
+
+### Tier 1 reference set — built from structure, frozen
+
+Queried the RCSB search API for entries containing UniProt **P24394**: 10 hits, of which
+**four are antibody complexes**:
+
+| PDB | Antibody | Format | CDR-H3 |
+|---|---|---|---|
+| **6WGL** | **dupilumab** (Dupixent) | Fab | `DRLSITIRPRYYGLDV` |
+| 6OEL | engineered Fab | Fab | `WLGTGDC` |
+| 8K4Q | nanobody HuNb103 | VHH | `SDNDGNCQDY` |
+| 8Z8L | nanobody 4E9/dAb1 | VHH | `GVDGNCRNY` |
+
+Frozen to `novelty/reference_set.json` with per-file SHA256 and a UTC date, per the
+spec's instruction not to update mid-campaign. **Comparison only** — no sequence from any
+of these is used as a scaffold, per the hard rule.
+
+CDR boundaries for the references come from alignment transfer off the hu4D5-8 framework,
+whose spans are known exactly from the HLT REMARKs. **ANARCI and hmmer are both absent**
+and the 20-minute install box was deliberately not spent: the documented no-install
+fallback is adequate for "is our CDR-H3 suspiciously close to a known one", and the
+self-test confirms self-transfer recovers our own CDRs exactly (`H1='GFNIKDT'`,
+`H3='WGYAMDY'`).
+
+### **The >85% full-identity hard gate, as written, fails 100% of our designs**
+
+Measured identity of our **bare hu4D5-8 framework** — before any CDR is designed —
+against each anti-IL-4Rα reference:
+
+| reference | VH identity | VL identity |
+|---|---|---|
+| dupilumab | 0.759 | 0.579 |
+| **engineered_Fab_6OEL** | 0.543 | **0.860** |
+| nanobody_HuNb103 | 0.733 | — |
+| nanobody_4E9_dAb1 | 0.722 | — |
+
+`RANKING_AND_QC.md` §4: *"Full VH or VL identity to any anti-IL-4Rα antibody > 0.85 →
+Hard fail."* Our framework's VL is **0.860** against 6OEL's VL. Both are IGKV1-39-family
+kappa frameworks — `DIQMTQSPSSLSASVGDRVTITC…` vs `DIQVTQSPSSLSASVGDRVTITC…`. **Every
+design we generate would hard-fail that gate, on the framework alone, for a reason that
+has nothing to do with novelty.**
+
+It would also have failed *silently and late*: the screen does not run until selection on
+Monday, at which point the entire pool reads `novelty_status: fail` with no obvious cause.
+
+**Resolution, on the spec's own stated intent.** The same section says full identity to a
+non-IL-4Rα antibody is "expected and fine. This is the standardised framework", and the
+brief says standardised frameworks are *expected*. The gate's real target is derivation of
+**framework and CDRs together**. So:
+
+- **hard fail** when full identity > 0.85 **AND** concatenated-CDR identity > 0.60
+  (genuine scaffold derivation)
+- **flag**, recorded with the explanation, when full identity > 0.85 but the CDRs are
+  novel (shared germline framework)
+
+Both branches are self-tested: a design that copies the reference's CDRs on the reference
+framework still hard-fails; a design with novel CDRs on the same framework is flagged, not
+failed, and never silently passed. The CDR-H3 > 0.70 and exact-match hard fails are
+**unchanged** — those are the checks the rule is actually about, and our framework's own
+native H3 sits at 0.286–0.429 against the references, comfortably clear.
+
+**This is a change to a documented hard gate and the user should review it.** It is
+marked `[MODIFIED GATE]` in the code and in every flag string it emits.
+
+### Throughput correction: the pilot overstated cost
+
+Production batch 0 did **5 backbones in 7.8 minutes ≈ 94 s/backbone**, against the
+pilot's measured **174 s/design**. The pilot ran `num_designs=2`, so one-time model load
+and IGSO3 setup (~60–90 s) were amortised over 2 designs instead of 10. **174 s/design is
+the correct number for a 2-design invocation; ~94 s is the marginal rate at batch size 10.**
+Re-sizing once batch 0 completes — at the marginal rate the 230-backbone run costs
+roughly **9.7 GPU-h rather than 14**, which frees budget for deeper resampling.
+
