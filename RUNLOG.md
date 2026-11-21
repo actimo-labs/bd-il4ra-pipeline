@@ -1684,3 +1684,156 @@ proven backbone and screens them for sequons *before* RF2, so that entire reject
 category largely disappears there. That round, already chained, is where the usable pool
 will actually come from — not round 1.
 
+
+---
+
+# MORNING BRIEF (FINAL — supersedes the interim brief above)
+
+**Written 2026-11-21 14:55 UTC = Sun 01:55 AEDT. T-62.1h to the deadline
+(Tue 24 Nov 15:59 AEDT / Mon 23 Nov 23:59 ET).**
+
+## Status in one line
+
+**Gate G1 PASSED. Round-1 production is 22% done and running; the entire pipeline from
+generation to a validated submission file exists, is self-tested, and has been run on
+real data. Rung F0. Nothing is blocked and nothing needs you to keep it moving.**
+
+## Running unattended right now
+
+| tmux | doing | ETA |
+|---|---|---|
+| `prod` | round 1: 230 backbones across E1/E2/E3 | **~21:30 UTC (08:30 AEDT)** |
+| `chain` | waits for `prod`, then resample → harvest → Boltz-2 → rank → select → draft .xlsx | **~03:00 UTC Mon** |
+
+At 14:51 UTC: **99 designs / 50 backbones** done (E1 40, E2 39, E3 20). GPU 88%, root
+disk untouched at 25 G free, scratch 57 MB of output. Both sessions are resumable;
+killing either is safe. `tmux attach -t prod` or `-t chain` to watch.
+
+## What exists
+
+```
+scripts/  13 modules + a regression gate, 186 assertions, all passing
+          01 target prep · 02 epitopes · 03 crop/HLT · 04 interface · 05 novelty
+          06 harvest · 07 prefilter · 08 rank+select · 09 boltz · qc_liabilities
+          build_submission · select_backbones · merge_manifests · merge_boltz
+          10 pilot · 11 production · 12 resample · 13 overnight chain
+docs/TARGET_PREP_RECORD.md   every target-prep judgement call, for the methodology email
+30 local commits. Nothing pushed.
+```
+
+Run `bash scripts/00_run_all_selftests.sh` any time — it should print `16/16 modules clean`.
+
+## Measured, not estimated
+
+```
+RFdiffusion_Ab  80.7 s/backbone     ProteinMPNN 1.50 s/seq     RF2_ab 24.1 s/design
+end-to-end     131.8 s/backbone     Boltz-2   120.6 s/complex (5 samples, msa=empty)
+round 1 total    8.42 GPU-h
+```
+
+## Where the science stands — **everything below is PREDICTED. Nothing is a binder.**
+
+Cross-arm at n=80 (**not a rate** — below the n=100 bar):
+
+```
+arm    n  pae med  pae min  pae<10  eligible  maskfrac  hotspots  hard-pass
+E1    40    15.08     4.30    4/40     17/40      0.12    2.25/4      3/40
+E2    20    15.18     7.64    1/20      6/20      0.35    0.25/4      0/20
+E3    20    14.95     5.25    3/20      9/20      0.24    1.55/4      1/20
+```
+
+Best so far: `pae 4.30`, and two E1 designs at `pae 8.03 / 8.42` burying 1473–1729 Å²
+with **4/4 hotspots engaged**. RF2's `interaction_pae` was verified by code reading to
+be the **(H+L) vs T** metric, not the contaminated global one.
+
+Novelty: **max CDR-H3 identity 0.50** against a frozen set of **1076 references** —
+4 anti-IL-4Rα structures (dupilumab, 6OEL, two nanobodies) and 1072 clinical-stage
+therapeutics. Comfortably clear of the 0.70 threshold.
+
+**Yield is the thing to watch.** Hard-pass is 4/80 = 5%, which straight-lines to ~23
+passing designs for 20 slots — adequate but thin. **60% of all rejections are CDR
+N-glycosylation sequons**, and the resample round screens those out *before* spending
+RF2. That round, not round 1, is where the usable pool comes from.
+
+## Decisions I made for you (all reversible, all logged in full above)
+
+1. **Glycan mask 12.0 → 10.0 Å.** At 12 Å no Fv-sized sub-site in E1 met the documented
+   minimums (best 2 hydrophobic / 302 Å²); at 10 Å several reach 4 / 666 Å². The
+   permission was conditional on exactly this. Both runs kept in `target/radius_study/`.
+2. **Germline framework arm dropped.** RFantibody ships one submittable Fv framework;
+   the other is a nanobody. A germline HLT needs Chothia numbering we cannot get
+   (ANARCI/hmmer absent, SabDab serves an HTML shell). Diversity comes from 3 epitopes
+   + deep CDR resampling instead.
+3. **E2 continues unchanged** despite weak hotspot engagement — it is binding the
+   intended epitope about one loop off. If you want it re-pointed: `R59, I75, G106, Q107`.
+4. Skipped the 883 MB Zenodo RF2-**TCR** weight (referenced nowhere in the code) and the
+   20-minute ANARCI install box (used the documented no-install fallback).
+
+## The one thing that needs your judgement
+
+**I modified a hard gate in `RANKING_AND_QC.md` §4.** As written, *">0.85 full VH/VL
+identity to any anti-IL-4Rα antibody = hard fail"* fails **100% of our designs**: the
+bare hu4D5-8 framework is **0.860 identical to the 6OEL anti-IL-4Rα Fab's VL** before any
+CDR is designed, both being IGKV1-39 kappa frameworks. It would have failed silently, at
+selection, on Monday.
+
+Resolved on the section's own stated intent (framework sharing is "expected and fine"):
+hard-fail only when high full identity is accompanied by **CDR-concat identity > 0.60**;
+otherwise flag and record. CDR-H3 > 0.70 and exact-match hard fails are untouched.
+Marked `[MODIFIED GATE]` everywhere it appears. **If you disagree, change this first.**
+
+Also new and worth a look: a `masked_contact_frac` gate at **0.40** `[ASSUMPTION]`,
+added after I found that the glycan mask filtered epitope *selection* but masked
+residues stayed in the crop, so designs were docking onto presumed-glycan surface
+(E2 median 35% of contacts).
+
+## Still yours, untouched
+
+- **Gate G0 — does Geodesic NovaDDE support paired VH/VL?** Unresolved. **Zero credits
+  spent.** Arm B left `not_started`, exactly as instructed.
+- **GenScript challenge-account login — untested.** `SUBMISSION.md` says do not test it
+  for the first time at submission.
+- **`git push`** — 30 commits sit local.
+
+## Four silent bugs found, all in glue rather than science
+
+Every scientific module had a self-test and every one passed. **All four defects were in
+the shell and scoring plumbing between stages**, and all four were found by *running*
+things rather than reading them:
+
+1. `conda run python - <<'HEREDOC'` **does not forward stdin** — exits 0, does nothing.
+   This made the deep-resample stage report *"No backbones passed interaction_pae < 10"*,
+   indistinguishable from a real negative, and the same construct sat in both chain merge
+   steps including one whose safety assertion lived inside the python that never ran.
+2. **RFdiffusion renumbers its output** (T = 226–312) against a crop numbered 9–188.
+   Disjoint sets made every epitope metric read zero; the natural misreading is "our
+   hotspots are bad".
+3. **Percent-identity denominators** — three instances. A 2-residue reference CDR-H3
+   scored **1.0 identical** to our 10-residue loop, hard-failing 5 of 20 novel designs.
+4. **Negative buried surface area** from duplicate residue IDs across chains in a
+   biopython entity tree — an Fv+target complex always has H1../L1../T1...
+
+## Your first five minutes
+
+```bash
+cd ~/tnf-track3/bd-il4ra-pipeline
+tmux ls                                              # prod, chain
+tail -60 /mnt/comp5data/bd-il4r/logs/overnight_chain.log
+column -t /mnt/comp5data/bd-il4r/out/production/progress.tsv | tail -20
+bash scripts/00_run_all_selftests.sh                 # expect 16/16
+ls /mnt/comp5data/bd-il4r/out/lkg/                   # ranked snapshot + draft xlsx
+head -3 candidates.tsv | cut -c1-200
+git log --oneline | head -30
+```
+
+## Highest-value next action
+
+**Resolve G0 (Geodesic paired VH/VL) and test the GenScript challenge login.** Both are
+yours, both are cheap, and they are the only remaining things that can invalidate the
+plan. The compute needs nothing from you.
+
+Then look at the realised arm split. E1 is outperforming on hotspot engagement despite
+having the weakest patch on paper — **my structural prediction was wrong, and only
+running designs revealed it** — so the 12/5/3 slot target should be set from the
+morning's numbers rather than from the plan.
+
