@@ -1036,3 +1036,67 @@ Boltz-2 cross-check     ~3.3 h  ~100 survivors at 120.6 s each
                         ~15.7 h  comfortably inside the 20-28 h envelope
 ```
 
+
+---
+
+## 2026-11-21 13:31 UTC — First production batch through the full funnel
+Gate: G2  |  Rung: F0  |  T-63.4h
+
+Ran `06_harvest.py` → `08_rank_select.py` over the first 20 production designs. **The
+entire pipeline from RF2 output to a ranked, clustered, selected manifest now works on
+real data.** No stage is untested against real input any more.
+
+### Funnel, n=20, E1 only — **provisional, n well below 100**
+
+```
+total                              20
+eligible (hard QC gates)           11   (55%)
+interaction_pae < 10                3   (15%)
+framework_aligned_cdr_rmsd <= 2    18   (90%)
+ALL THREE                           3   (15%)
+```
+
+**Every one of the 9 eligibility failures is `no_cdr_glycosylation`** — the same single
+cause as in the pilot, now at 45% rather than 75%. Nothing else failed a hard gate: no
+alphabet, length, Cys-parity or novelty failures at all.
+
+**Per CLAUDE.md these are NOT rates and nothing is being re-sized on them.** n=20, one
+arm, one batch. Prior campaigns saw 3.1% at n=32 become 0.7% at n=272. Recorded as a
+provisional observation to be recomputed at n>100.
+
+### The `target_aligned_antibody_rmsd < 2 Å` reading is now definitively unusable
+
+Across 20 designs the minimum is **2.62 Å**; **0/20** pass. Combined with 0/4 on the
+pilot, that reading of the README would reject the entire campaign. The ranking module's
+choice — `framework_aligned_cdr_rmsd ≤ 2 Å` as the hard self-consistency cut (90% pass),
+`target_aligned` as a ranked signal — is the only reading that filters without
+annihilating. Both remain recorded per design, labelled `[ASSUMPTION]`.
+
+### Top 3 designs — **all PREDICTED, none measured. Round 1 has not run.**
+
+```
+candidate              pae    cdrRMSD  dockRMSD    BSA    hotspots  eligible
+E1_b000_3_dldesign_1   8.03     1.10      6.71   1728.6     4/4      pass
+E1_b000_8_dldesign_0   8.42     0.82      6.03   1473.3     4/4      pass
+E1_b000_9_dldesign_1   8.55     1.66      2.62   1476.1     2/4      pass
+```
+
+Two designs engage **all four E1 hotspots** with ~1500–1730 Å² buried and CDR
+self-consistency under 1.1 Å. That is a credible-looking interface by every computational
+measure we have. It is a **prediction**, and the RFantibody authors say plainly that
+their filter is the pipeline's weakest component.
+
+### Selection machinery behaved correctly under a starved pool
+
+With only 3 eligible designs it did the right things and said so: E2 and E3 forfeited
+their slots (no eligible designs yet — they have not been generated), then it walked the
+documented relaxation ladder (arm targets → cluster cap) and still returned **3, not 20**.
+It did not invent candidates or lower a hard gate to hit the target number.
+
+### Projection, explicitly labelled as arithmetic not evidence
+
+If the provisional 15% held over the full round-1 pool of ~460 designs, that is ~69
+fully-passing candidates for 20 slots — adequate, with room for diversity. **If it does
+not hold, the deep-resample round is the lever**, and the sequon prefilter alone should
+lift the eligible fraction from ~55% toward ~100% of folded designs.
+
