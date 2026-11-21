@@ -20,7 +20,15 @@ target:
   crosscheck_structure: 3BPN    # chain B, 3.02 A, ternary; cited by the brief
   n_glyc_sequons: [53, 98, 128, 134, 176, 209]   # ALL inside the ECD
   disulfides: [[34, 44], [74, 86]]
-  glycan_mask_radius_angstrom: 12.0   # conservative. Log any relaxation in RUNLOG.md
+  glycan_mask_radius_angstrom: 10.0   # RELAXED from 12.0 on 2026-11-21. See RUNLOG.
+                                      # At 12.0 A no Fv-sized sub-site inside E1 reached the
+                                      # documented minimums (>=3 hydrophobic, >=600 A^2):
+                                      # best was 2 hydrophobic / 302 A^2. At 10.0 A several
+                                      # sub-sites reach 4 hydrophobic / 600-675 A^2.
+                                      # Both runs preserved in target/radius_study/.
+  numbering_offset_uniprot_minus_pdb: 25   # uniprot = pdb + 25. Derived from SEQADV in
+                                           # 1IAR AND 3BPN independently; cross-check passed.
+  disulfides_observed_uniprot: [[34, 44], [54, 84], [74, 86]]   # THREE, not two. 1IAR SSBOND.
   membrane_proximal_exclude_last_n: 15
 
 epitopes:
@@ -28,21 +36,27 @@ epitopes:
     description: "IL-4/IL-13 competitive site -- IL-4 contact surface on IL-4Ra"
     definition: "1IAR chain B residues within 5.0 A heavy-atom of chain A, minus masks"
     slot_target: 12
-    residues: null        # computed at stage S1
-    hotspots: null        # 3-5, chosen from residues; see TARGET_PREP.md section 6
-    frozen: false
+    residues_pdb: [13, 42, 43, 66, 67, 68, 69, 70, 125, 126, 127, 130, 131]
+    residues_labelled: ['Y38', 'L67', 'L68', 'D91', 'D92', 'V93', 'V94', 'S95', 'D150', 'N151', 'Y152', 'N155', 'H156']   # UniProt numbering
+    hotspots_pdb: [67, 69, 125, 127]             # post-crop renumbering applied at S1b
+    hotspots_labelled: ['D92', 'V94', 'D150', 'Y152']
+    frozen: true
   E2:
     description: "Best-scoring alternate surface patch"
     slot_target: 5
-    residues: null
-    hotspots: null
-    frozen: false
+    residues_pdb: [34, 36, 46, 47, 48, 50, 77, 79, 81, 82, 83, 84, 85]
+    residues_labelled: ['R59', 'L61', 'A71', 'H72', 'T73', 'I75', 'D102', 'W104', 'G106', 'Q107', 'Q108', 'L109', 'L110']   # UniProt numbering
+    hotspots_pdb: [36, 50, 79, 84]             # post-crop renumbering applied at S1b
+    hotspots_labelled: ['L61', 'I75', 'W104', 'L109']
+    frozen: true
   E3:
     description: "Second-best alternate surface patch"
     slot_target: 3
-    residues: null
-    hotspots: null
-    frozen: false
+    residues_pdb: [106, 107, 112, 113, 114, 115, 160, 162, 163, 172]
+    residues_labelled: ['V131', 'H132', 'D137', 'T138', 'L139', 'L140', 'R185', 'A187', 'A188', 'Y197']   # UniProt numbering
+    hotspots_pdb: [115, 160, 162, 163]             # post-crop renumbering applied at S1b
+    hotspots_labelled: ['L140', 'R185', 'A187', 'A188']
+    frozen: true
 
 frameworks:
   hu4D5-8:
@@ -82,7 +96,12 @@ paths:
 
 arms:
   A_rfantibody:
-    status: not_started       # not_started | installing | piloting | producing | dead
+    status: piloting          # not_started | installing | piloting | producing | dead
+    commit_sha: efe4b9040f051edc229e9318ead586ff76236c9b
+    install_verified_utc: "2026-11-21T12:35Z"
+    torch: "2.3.1+cu118"
+    dgl: "2.4.0+cu118"
+    cuda_available: true      # VERIFIED, not inferred: A100-SXM4-80GB, real matmul executed
     install_time_box_hours: 3
     abort_gate: G1
   B_geodesic:
@@ -120,7 +139,7 @@ thresholds:          # ALL are our choices, not GenScript's. Label [ASSUMPTION] 
 
 gates:
   G0_access_viability: { due_local: "2026-11-22T02:00+11:00", status: pending }
-  G1_target_and_install: { due_local: "2026-11-22T08:00+11:00", status: pending }
+  G1_target_and_install: { due_local: "2026-11-22T08:00+11:00", status: in_progress }  # install DONE, target prep DONE, pilot pending
   G2_sized_and_launched: { due_local: "2026-11-22T20:00+11:00", status: pending }
   G3_pool_exists: { due_local: "2026-11-23T10:00+11:00", status: pending }
   G4_design_freeze: { due_local: "2026-11-23T16:00+11:00", status: pending }
