@@ -1,0 +1,131 @@
+# sprint.yaml -- single source of truth for paths, epitopes, budgets and gate state.
+# Claude Code reads this at session start and UPDATES it as gates are passed.
+# Anything not yet measured is `null` or `not_run` -- never a guessed number.
+
+campaign:
+  id: bd-il4r
+  repo: bd-il4r--pipeline
+  competition: "GenScript LSRG x Geodesic -- Beyond Binding, Round 1"
+  deadline_utc: "2026-11-24T04:59:00Z"      # Mon 23 Nov 23:59 ET
+  deadline_local: "2026-11-24T15:59:00+11:00"  # Tue 24 Nov, Melbourne
+  max_designs: 20
+
+target:
+  name: "Human IL-4R alpha (CD124) extracellular domain"
+  uniprot: P24394-1
+  ecd_range: [26, 232]          # UniProt numbering; matches the brief exactly
+  ecd_length: 207               # assert this
+  primary_structure: 1IAR       # chain B, 2.30 A, binary IL-4/IL-4Ra. Note M1F + C182A
+  primary_chain: B
+  crosscheck_structure: 3BPN    # chain B, 3.02 A, ternary; cited by the brief
+  n_glyc_sequons: [53, 98, 128, 134, 176, 209]   # ALL inside the ECD
+  disulfides: [[34, 44], [74, 86]]
+  glycan_mask_radius_angstrom: 12.0   # conservative. Log any relaxation in RUNLOG.md
+  membrane_proximal_exclude_last_n: 15
+
+epitopes:
+  E1:
+    description: "IL-4/IL-13 competitive site -- IL-4 contact surface on IL-4Ra"
+    definition: "1IAR chain B residues within 5.0 A heavy-atom of chain A, minus masks"
+    slot_target: 12
+    residues: null        # computed at stage S1
+    hotspots: null        # 3-5, chosen from residues; see TARGET_PREP.md section 6
+    frozen: false
+  E2:
+    description: "Best-scoring alternate surface patch"
+    slot_target: 5
+    residues: null
+    hotspots: null
+    frozen: false
+  E3:
+    description: "Second-best alternate surface patch"
+    slot_target: 3
+    residues: null
+    hotspots: null
+    frozen: false
+
+frameworks:
+  hu4D5-8:
+    class: kappa
+    role: "RFantibody's validated framework -- primary arm"
+    hlt_pdb: null
+  germline:
+    v_genes: "IGHV3-23 / IGKV1-39"
+    class: kappa
+    role: "Humanness/developability arm -- drop at G2 if pilot metrics are clearly worse"
+    hlt_pdb: null
+
+submission:
+  ch_type: "Human IgG1"     # LOCKED: the live challenge hub states the design format as IgG1.
+                            # The dropdown offers IgG4 too -- do not use it. Identical across all 20.
+  cl_type: "Human Kappa"    # MUST match the VL class of the framework used
+  po_number: "BB20261112"   # verbatim from the brief; a challenge email overrides
+  project_name: "AIDD-test"
+  antigen_catalog_name: "Human IL-4 R alpha / CD124 Protein, Fc Tag, low endotoxin (MALS verified)"
+  antigen_size: "100ug/EA"
+  expected_item_count: 22
+  expected_total_usd: 0.00   # ABORT if anything else
+  # GenScript service credits are a pre-applied coupon on the challenge-specific account,
+  # not a budget. Nothing to allocate. Log in with THAT account and verify 0.00 USD.
+  # See CHALLENGE_SPEC.md section 9b.
+
+paths:
+  scratch: /mnt/comp5data/bd-il4r
+  env_file: /mnt/comp5data/bd-il4r/env.sh
+  rfantibody: /mnt/comp5data/bd-il4r/rfantibody
+  weights: /mnt/comp5data/bd-il4r/rfantibody/weights
+  target: /mnt/comp5data/bd-il4r/target
+  out: /mnt/comp5data/bd-il4r/out
+  manifest: ./candidates.tsv
+  scripts: ./scripts        # EMPTY at handoff. The agent authors these; specs in CLAUDE.md section 10
+  # NOTHING bulk goes on / -- root has ~25 GB free
+
+arms:
+  A_rfantibody:
+    status: not_started       # not_started | installing | piloting | producing | dead
+    install_time_box_hours: 3
+    abort_gate: G1
+  B_geodesic:
+    status: not_started
+    paired_vh_vl_supported: unknown   # GATE G0 -- resolve before spending credits
+    credits_available: 1000
+    credits_spent: 0
+    credit_reset_day_utc: unknown     # Settings -> Usage. Check: a reset inside the sprint = +1000 free
+    topup_rate_usd_per_credit: 0.01   # topping up is ~$10/1000. Never let credits degrade the submission
+    reserve_fraction: 0.15
+
+# Fill from the pilot at G2. Prior-campaign minibinder rates do NOT transfer.
+measured_throughput:
+  rfdiffusion_ab_s_per_design: null
+  proteinmpnn_s_per_backbone: null
+  rf2_ab_s_per_design: null
+  boltz2_5sample_s_per_complex: null
+  n_designs_measured: null
+  available_gpu_hours_estimate: 24
+
+boltz2:
+  msa: empty            # the MSA server at 10.148.0.19:8080 is dead. Do not try to revive it
+  diffusion_samples: 5  # 2.41x cost for 5x samples; single-sample margins are noise
+  score_chains: "H+L vs T"   # NEVER global ipTM on an Fv
+
+thresholds:          # ALL are our choices, not GenScript's. Label [ASSUMPTION] in methods.
+  novelty_cdrh3_identity_max: 0.70
+  novelty_cdr_concat_identity_max: 0.60
+  novelty_il4ra_full_identity_max: 0.85
+  diversity_cluster_cut: 0.70
+  diversity_max_per_cluster: 3
+  vh_length: [105, 135]
+  vl_length: [100, 125]
+  cys_per_domain: 2
+
+gates:
+  G0_access_viability: { due_local: "2026-11-22T02:00+11:00", status: pending }
+  G1_target_and_install: { due_local: "2026-11-22T08:00+11:00", status: pending }
+  G2_sized_and_launched: { due_local: "2026-11-22T20:00+11:00", status: pending }
+  G3_pool_exists: { due_local: "2026-11-23T10:00+11:00", status: pending }
+  G4_design_freeze: { due_local: "2026-11-23T16:00+11:00", status: pending }
+  G5_selection_freeze: { due_local: "2026-11-24T04:00+11:00", status: pending }
+  submit: { due_local: "2026-11-24T10:00+11:00", status: pending }
+
+fallback_rung: F0   # F0 both arms | F1 geodesic-only | F2 rfantibody-only | F3 home-roll | F4 submit-what-exists
+last_known_good_pool: null   # path to >=20 eligible sequences, submittable within 30 min. Required from G3
