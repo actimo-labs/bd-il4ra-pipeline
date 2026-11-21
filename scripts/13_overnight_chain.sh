@@ -52,24 +52,9 @@ $CONDA run -n boltz python "$REPO/scripts/06_harvest.py" \
   --root "$BDIL4R/out/resample" --pattern "*/*/4_rf2/*.pdb" \
   --out "$BDIL4R/out/candidates_resample.tsv" 2>&1 | tee -a "$LOG"
 
-# merge the two manifests, keeping full-name joins
-$CONDA run -n boltz python - "$REPO/candidates.tsv" "$BDIL4R/out/candidates_resample.tsv" <<'PY' 2>&1 | tee -a "$LOG"
-import csv, sys
-from pathlib import Path
-main, extra = Path(sys.argv[1]), Path(sys.argv[2])
-if not extra.exists():
-    print("[merge] no resample manifest, nothing to merge"); raise SystemExit
-a = list(csv.DictReader(open(main), delimiter="\t")) if main.exists() else []
-b = list(csv.DictReader(open(extra), delimiter="\t"))
-cols = list(a[0].keys()) if a else list(b[0].keys())
-seen = {r["candidate_id"] for r in a}
-add = [r for r in b if r["candidate_id"] not in seen]
-with open(main, "w") as w:
-    w.write("\t".join(cols) + "\n")
-    for r in a + add:
-        w.write("\t".join(str(r.get(c, "not_run")) for c in cols) + "\n")
-print(f"[merge] {len(a)} production + {len(add)} resample = {len(a)+len(add)} candidates")
-PY
+# merge the two manifests. NOT a heredoc: conda run does not forward stdin.
+$CONDA run -n boltz python "$REPO/scripts/merge_manifests.py" \
+  "$REPO/candidates.tsv" "$BDIL4R/out/candidates_resample.tsv" 2>&1 | tee -a "$LOG"
 
 # ---- 4. Boltz-2 cross-check on the top survivors ------------------------
 say "--- STAGE: Boltz-2 cross-check ---"
@@ -79,34 +64,9 @@ $CONDA run -n boltz python "$REPO/scripts/09_boltz_crosscheck.py" \
   --manifest "$REPO/candidates.tsv" --limit "$N_BOLTZ" \
   --out "$BDIL4R/out/boltz" 2>&1 | tail -200 | tee -a "$LOG"
 
-# fold Boltz metrics back into the manifest, asserting a non-empty full-name join
-$CONDA run -n boltz python - "$REPO/candidates.tsv" "$BDIL4R/out/boltz/boltz_results.json" <<'PY' 2>&1 | tee -a "$LOG"
-import csv, json, sys
-from pathlib import Path
-man, bj = Path(sys.argv[1]), Path(sys.argv[2])
-if not bj.exists():
-    print("[merge-boltz] no boltz results"); raise SystemExit
-res = {r["candidate_id"]: r for r in json.loads(bj.read_text()) if "candidate_id" in r}
-rows = list(csv.DictReader(open(man), delimiter="\t"))
-cols = list(rows[0].keys())
-# CLAUDE.md s6 trap 5: match on FULL ids and assert the join is non-empty
-hit = sum(1 for r in rows if r["candidate_id"] in res)
-assert hit > 0, (f"Boltz join matched 0 of {len(rows)} rows on full candidate_id. "
-                 f"Refusing to write a manifest with a silently empty join.")
-for r in rows:
-    b = res.get(r["candidate_id"])
-    if not b:
-        continue
-    if b.get("boltz2_iface_mean5") is not None:
-        r["boltz2_iface_mean5"] = b["boltz2_iface_mean5"]
-    if b.get("boltz2_iface_sd5") is not None:
-        r["boltz2_iface_sd5"] = b["boltz2_iface_sd5"]
-with open(man, "w") as w:
-    w.write("\t".join(cols) + "\n")
-    for r in rows:
-        w.write("\t".join(str(r.get(c, "not_run")) for c in cols) + "\n")
-print(f"[merge-boltz] joined {hit}/{len(rows)} rows on full candidate_id")
-PY
+# fold Boltz metrics in. Asserts a non-empty FULL-id join before writing (trap 5).
+$CONDA run -n boltz python "$REPO/scripts/merge_boltz.py" \
+  "$REPO/candidates.tsv" "$BDIL4R/out/boltz/boltz_results.json" 2>&1 | tee -a "$LOG"
 
 # ---- 5. rank and select -------------------------------------------------
 say "--- STAGE: rank + select ---"

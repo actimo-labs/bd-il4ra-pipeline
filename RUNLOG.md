@@ -1224,3 +1224,47 @@ Round 1 at `--temperature 0.2` gave 55% sequon-free. This resample draw at `0.25
 with noise. Flagged only so that if the resample round comes back with a much lower clean
 fraction than round 1, temperature is the first thing to check. Not changing it on n=4.
 
+
+### Same bug found in TWO more places, before they could fire
+
+Having found one `conda run` + heredoc no-op, I grepped for the pattern and confirmed it
+directly:
+
+```bash
+$ ~/miniforge3/bin/conda run -n boltz python - <<'PY'
+print("HEREDOC REACHED PYTHON")
+PY
+exit=0        # and NO output -- stdin is not forwarded
+```
+
+`13_overnight_chain.sh` used the same construct for **both** merge steps (lines 56 and 83):
+merging the resample manifest into `candidates.tsv`, and folding Boltz-2 metrics in.
+Both would have silently done nothing. The Boltz one is the nastier of the two — its
+non-empty-join assertion lived *inside* the python that never ran, so the guard would
+have been bypassed by the same failure it was written to catch, and the morning manifest
+would have read `boltz2_iface_mean5: not_run` on every row, looking exactly like
+"Boltz was never run".
+
+Extracted both to real files, `scripts/merge_manifests.py` and `scripts/merge_boltz.py`,
+and tested them on real data:
+
+```
+[merge-boltz] joined 1/20 rows on full candidate_id; 1 boltz2_iface_mean5 values written
+
+# deliberately mismatched ids:
+REFUSING TO WRITE: Boltz join matched 0 of 20 manifest rows on full candidate_id.
+  Sample manifest id: 'E1_b000_E1_b000_0_dldesign_0'; sample boltz id: 'TOTALLY_WRONG_ID'.
+exit=1
+```
+
+`grep -c "<<'PY'" scripts/13_overnight_chain.sh` is now **0**.
+
+**Precise scope of the bug, so nobody over-corrects:** only `conda run ... python -`
+reading a heredoc is affected. `conda run ... python -c "..."` works fine, and
+`python3 - <<'PY'` with the system interpreter (used throughout this session for file
+edits) works fine. It is the conda-run-plus-stdin combination specifically.
+
+The chain was **restarted** (`tmux kill-session -t chain` then relaunched) because bash
+reads a script incrementally as it executes, and I had edited the file underneath a
+running instance. Verified back in its wait loop at 13:40:46Z with production still alive.
+
