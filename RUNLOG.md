@@ -431,3 +431,38 @@ Fixed with a **hard SASA floor of 30 A² applied before ranking**, plus an asser
 every returned hotspot and two new self-tests (buried residue never chosen; all-buried
 patch raises instead of returning garbage). E1 hotspots changed Y38 -> **D92**.
 
+
+### Crops and framework built — `scripts/03_crop_hlt.py` (8/8 self-test)
+
+**Target-file format verified against the shipped example, not assumed.**
+`scripts/examples/example_inputs/rsv_site3.pdb` is chain **T**, **zero REMARK lines**, and
+**keeps its original residue numbering** (it runs 253..960 with gaps — it is *not*
+renumbered 1..N). So our crops keep 1IAR chain B PDB numbering and only relabel the chain.
+
+That means post-crop numbering == pre-crop numbering. CLAUDE.md trap 4 still demands the
+hotspots be named in post-crop numbering, so `verify_target()` **re-parses the file we
+just wrote** and asserts (a) exactly one chain and it is `T`, (b) every hotspot is present,
+(c) each hotspot's one-letter code matches SEQRES at that index. A numbering slip fails
+loudly instead of producing a plausible-looking run.
+
+| Epitope | Crop | Atoms | Segments | **Hotspot string for RFdiffusion** |
+|---|---|---|---|---|
+| E1 | 87 res | 715 | 7 | **`T67,T69,T125,T127`** (D92, V94, D150, Y152 UniProt) |
+| E2 | 87 res | 676 | 2 | **`T36,T50,T79,T84`** (L61, I75, W104, L109) |
+| E3 | 59 res | 481 | 5 | **`T115,T160,T162,T163`** (L140, R185, A187, A188) |
+
+Calibration against the shipped example: `rsv_site3.pdb` is 251 residues in 5 segments
+(lengths 23/46/58/62/62). E1's 7 segments are shorter (7-18 residues each) but each is a
+single secondary-structure element, and 87 residues keeps RF2/RFdiffusion's O(N²) cost
+down. **E1 is the most fragmented crop** — if the pilot shows undocked output for E1 but
+not E2, crop fragmentation is the first thing to suspect, ahead of the hotspots.
+
+Framework `hu4D5-8_Fv_HLT.pdb` copied from the RFantibody examples (ships pre-converted).
+Verified: chains exactly H+L, H=116 L=107 residues, and `PDBinfo-LABEL` REMARKs present
+for **all six** CDRs — H1 26-32, H2 52-57, H3 99-105, L1 140-150, L2 166-172, L3 205-213
+(1-indexed absolute across H then L, matching the HLT spec). No CDR index exceeds the
+residue count.
+
+The `chothia2HLT.py` converter was not needed. Note the README calls it
+`chothia_to_HLT.py`; the actual filename is `chothia2HLT.py`.
+
