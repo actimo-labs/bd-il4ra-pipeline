@@ -253,18 +253,36 @@ def score_hlt(path, epitope_residues=None, hotspots=None, strict=True,
         }
 
     # ---- a blunt docked / not-docked verdict ----
-    res["verdict"] = classify(hl_t, res.get("hotspots"))
+    res["verdict"] = classify(hl_t, res.get("hotspots"), res.get("epitope"),
+                              res.get("masked_surface"))
     return res
 
 
-def classify(hl_t, hotspots):
-    """Undocked output is the documented symptom of bad hotspots (RFantibody README)."""
+def classify(hl_t, hotspots, epitope=None, masked=None):
+    """Undocked output is the documented symptom of bad hotspots (RFantibody README).
+
+    Hotspot engagement alone is TOO STRICT as a verdict. Measured on the E2 arm: designs
+    were labelled "DOCKED OFF-TARGET" for missing the four nominated hotspots while in
+    fact binding the intended epitope one loop away, on clean (unmasked) surface spanning
+    23 A. That is a usable binder at a slightly different sub-site, not a failure, and
+    calling it off-target in the manifest would have thrown the arm away. The verdict now
+    distinguishes "missed my hotspots" from "bound somewhere I did not aim at all".
+    """
     if hl_t["n_residue_contacts"] == 0:
         return "UNDOCKED -- zero (H+L) vs T residue contacts"
     if hl_t["bsa_a2"] < 400:
         return f"WEAK -- only {hl_t['bsa_a2']:.0f} A^2 buried"
-    if hotspots and hotspots["n_engaged_under_8A"] == 0:
-        return "DOCKED OFF-TARGET -- contacts the target but engages no hotspot"
+    if masked and masked.get("masked_contact_frac", 0) > 0.5:
+        return (f"DOCKED ON MASKED SURFACE -- "
+                f"{masked['masked_contact_frac']:.0%} of contacts on presumed glycan")
+    epi_frac = (epitope or {}).get("on_epitope_frac_of_all_contacts")
+    n_hs = (hotspots or {}).get("n_engaged_under_8A")
+    if n_hs:
+        return "DOCKED ON HOTSPOTS"
+    if epi_frac is not None and epi_frac >= 0.15:
+        return f"DOCKED ON EPITOPE (off-hotspot, {epi_frac:.0%} of contacts on epitope)"
+    if epitope is not None or hotspots is not None:
+        return "DOCKED OFF-EPITOPE -- contacts the target away from the intended patch"
     return "DOCKED"
 
 
@@ -338,20 +356,29 @@ def self_test():
                               score_hlt(bound)["verdict"]))
         # classify() thresholds tested directly -- the toy fixture is far too small
         # to bury a realistic 400 A^2, so testing them through it would be meaningless
+        G = {"n_residue_contacts": 20, "bsa_a2": 900.0}
         check("classify: zero contacts -> UNDOCKED",
               lambda: _assert(classify({"n_residue_contacts": 0, "bsa_a2": 0.0}, None)
                               .startswith("UNDOCKED"), "x"))
         check("classify: contacts but tiny BSA -> WEAK",
               lambda: _assert(classify({"n_residue_contacts": 5, "bsa_a2": 260.0}, None)
                               .startswith("WEAK"), "x"))
-        check("classify: good BSA but no hotspot engaged -> DOCKED OFF-TARGET",
-              lambda: _assert(classify({"n_residue_contacts": 20, "bsa_a2": 900.0},
-                                       {"n_engaged_under_8A": 0}) == "DOCKED OFF-TARGET"
-                              or classify({"n_residue_contacts": 20, "bsa_a2": 900.0},
-                                          {"n_engaged_under_8A": 0}).startswith("DOCKED OFF"), "x"))
-        check("classify: good BSA and hotspots engaged -> DOCKED",
-              lambda: _assert(classify({"n_residue_contacts": 20, "bsa_a2": 900.0},
-                                       {"n_engaged_under_8A": 3}) == "DOCKED", "x"))
+        check("classify: hotspots engaged -> DOCKED ON HOTSPOTS",
+              lambda: _assert(classify(G, {"n_engaged_under_8A": 3})
+                              == "DOCKED ON HOTSPOTS", "x"))
+        check("classify: no hotspot but ON the epitope -> DOCKED ON EPITOPE, not off-target",
+              lambda: _assert(classify(G, {"n_engaged_under_8A": 0},
+                                       {"on_epitope_frac_of_all_contacts": 0.45})
+                              .startswith("DOCKED ON EPITOPE"), "x"))
+        check("classify: no hotspot and barely on the epitope -> DOCKED OFF-EPITOPE",
+              lambda: _assert(classify(G, {"n_engaged_under_8A": 0},
+                                       {"on_epitope_frac_of_all_contacts": 0.05})
+                              .startswith("DOCKED OFF-EPITOPE"), "x"))
+        check("classify: mostly on glycan-masked surface is called out explicitly",
+              lambda: _assert(classify(G, {"n_engaged_under_8A": 2},
+                                       {"on_epitope_frac_of_all_contacts": 0.5},
+                                       {"masked_contact_frac": 0.62})
+                              .startswith("DOCKED ON MASKED SURFACE"), "x"))
         check("separated target: ZERO (H+L) vs T contacts",
               lambda: _assert(score_hlt(unbound)["HL_vs_T"]["n_residue_contacts"] == 0, "nonzero"))
         check("separated target: verdict UNDOCKED",
