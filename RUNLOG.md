@@ -667,3 +667,62 @@ length-mismatch cases that must raise. After the fix all four designs are `DOCKE
 epitope metric in the campaign read zero, and the natural misreading is "our hotspots are
 bad, pick different ones."** Self-test count for `04_interface.py` is now 22/22.
 
+
+---
+
+## 2026-11-21 14:45 UTC — **PRODUCTION ROUND 1 LAUNCHED** (G2 sizing done)
+Gate: G2  |  Rung: F0  |  T-62.2h
+
+`scripts/11_run_production.sh`, running in tmux session **`prod`**.
+
+### Sizing, from measured numbers
+
+```
+cost/backbone at k=2 MPNN seqs = 174 + 2*28.75 = 231.5 s
+budget 14 GPU-h = 50400 s  ->  ~218 backbones  ->  ~436 designs
+```
+
+Realised: **230 backbones** (batch rounding) → ~460 designs, est. **14.0 GPU-h**.
+
+| Arm | Backbones | Batches | Hotspots | Slot target |
+|---|---|---|---|---|
+| E1 | 110 (50%) | 11 | `T67,T69,T125,T127` | 12 |
+| E2 | 70 (28%) | 7 | `T36,T79,T84,T85` | 5 |
+| E3 | 50 (22%) | 5 | `T115,T160,T162,T163` | 3 |
+
+E2/E3 are weighted **above** their slot share because both are better design targets than
+E1 (5–6 hydrophobic / 882–970 Å² vs E1's 4 / 666 Å²), while E1 still gets the most
+absolute backbones because it carries the most slots and is the hardest patch.
+
+### Remaining GPU budget after this round
+
+```
+round 1 generation     14.0 h   <- running
+deep resample          ~4.0 h   survivors only, 28.75 s/seq -- 6x cheaper than a backbone
+Boltz-2 cross-check    ~2.5 h   filtered survivors only, not the whole pool
+                       ------
+                       ~20.5 h  inside PIPELINE.md's 20-28 h envelope
+```
+
+### Two deliberate design choices in the runner
+
+1. **Round-robin across epitopes in batches of 10, not arm-by-arm.** If the run is killed
+   at any point — session drop, disk, a decision to stop early — all three arms have
+   proportional coverage. Running E1 to completion first would leave E3 with nothing.
+2. **Only 2 MPNN sequences per backbone in round 1.** The pilot measured a new backbone at
+   174 s against 28.75 s for another sequence on an existing one. Round 1 buys *backbone
+   diversity*; sequence depth is spent later on backbones that have already proven
+   themselves, which is `PIPELINE.md` §3 rule 2.
+
+**Resumable:** a batch whose `3_rf2/` directory is non-empty is skipped, so re-running the
+same command continues where it stopped. Per-batch outputs under
+`$BDIL4R/out/production/<E>/b<NNN>/{1_rfdiff,2_mpnn,3_rf2}`, raw and never overwritten.
+Progress appended to `out/production/progress.tsv`.
+
+**Disk guard:** the loop aborts (exit 2) if root free space drops below 10 GB, checked
+before every batch.
+
+Expected completion ~04:45 UTC Sun (15:45 AEDT). At the user's ~08:00 AEDT wake-up
+(21:00 UTC Sat) roughly 6 GPU-h will have run — on the order of 90 backbones / 180
+designs across all three arms.
+
