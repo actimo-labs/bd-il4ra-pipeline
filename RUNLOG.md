@@ -1419,3 +1419,44 @@ measurably better design targets** (5–6 hydrophobic residues and 882–970 Å�
 E2/E3 arms come back with better `interaction_pae` than E1, the slot split should move.
 That decision wants real numbers and they will exist by morning.
 
+
+---
+
+## 2026-11-21 13:43–13:46 UTC — Submission builder exercised on real data; chain fixed again
+Gate: G2  |  Rung: F0  |  T-63.2h
+
+`build_submission.py` had only ever seen synthetic rows. Ran it against the real
+3-candidate ranked manifest. Three things came out of it, two of them real bugs in the
+**chain**, not the builder:
+
+1. **Refusal path works on real data.** With `--expect 20` and 3 candidates it printed
+   both failures, wrote nothing, and exited **1** (verified without a pipe — my first
+   check read `tail`'s status, not the script's).
+2. **Raw `candidate_id`s fail the name validator.** They look like
+   `E1_b000_E1_b000_3_dldesign_1`: underscores are not in the allowed
+   alphanumeric+hyphen set. The `--rename` flag rewrites them to the spec's
+   `BDIL4R-E1-H4D5-RFAB-001` scheme, but **the chain was not passing `--rename`**, so
+   the overnight build would have failed the name check on every row.
+3. **The chain called it with system `python3`, where `openpyxl` is not installed** — it
+   would have silently taken the TSV fallback instead of writing the workbook.
+
+Both fixed: the chain now runs the builder under `conda run -n boltz` with `--rename`.
+Re-tested, and it produced a real `.xlsx`:
+
+```
+Antibody name           | VH Seq      | CH Type    | VL Seq      | CL Type
+BDIL4R-E1-H4D5-RFAB-001 | EVQLVESG... | Human IgG1 | DIQMTQSP... | Human Kappa
+BDIL4R-E1-H4D5-RFAB-002 | ...         | Human IgG1 | ...         | Human Kappa
+BDIL4R-E1-H4D5-RFAB-003 | ...         | Human IgG1 | ...         | Human Kappa
+66/66 checks passed
+```
+
+**Pattern worth naming:** all three of tonight's silent failures — the resample no-op,
+the two merge no-ops, and now these — were in **glue between stages**, not in the
+scientific modules. The modules all had self-tests and all passed. The shell that wires
+them together had none, and that is where every real defect lived. Test-running each
+stage once against real data found all of them inside about twenty minutes.
+
+`target/README.md` written (the `TARGET_PREP.md` §7 deliverable), also committed into the
+repo as `docs/TARGET_PREP_RECORD.md`.
+

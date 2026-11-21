@@ -76,9 +76,12 @@ python3 "$REPO/scripts/08_rank_select.py" --tsv "$REPO/candidates.tsv" 2>&1 | te
 say "--- STAGE: last-known-good snapshot ---"
 mkdir -p "$BDIL4R/out/lkg"
 cp "$REPO/candidates.tsv" "$BDIL4R/out/lkg/candidates_$(date -u +%Y%m%dT%H%M%SZ).tsv"
-python3 "$REPO/scripts/build_submission.py" --manifest "$REPO/candidates.tsv" \
-  --out "$BDIL4R/out/lkg/round1_draft.xlsx" --expect 20 2>&1 | tee -a "$LOG" || \
-  say "submission builder refused (expected if fewer than 20 selected) -- see above"
+# run under boltz so openpyxl is importable, and --rename so the Antibody name is the
+# BDIL4R-... scheme: raw candidate_ids contain underscores and fail the name validator.
+$CONDA run -n boltz python "$REPO/scripts/build_submission.py" \
+  --manifest "$REPO/candidates.tsv" --out "$BDIL4R/out/lkg/round1_draft.xlsx" \
+  --expect 20 --rename 2>&1 | tee -a "$LOG" || \
+  say "submission builder refused (expected if fewer than 20 are selected) -- see above"
 
 say "=== OVERNIGHT CHAIN COMPLETE ==="
 say "pool: $(ls "$BDIL4R"/out/production/*/*/3_rf2/*.pdb "$BDIL4R"/out/resample/*/*/4_rf2/*.pdb 2>/dev/null | wc -l) designs"
