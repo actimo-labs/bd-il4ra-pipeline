@@ -1837,3 +1837,70 @@ having the weakest patch on paper — **my structural prediction was wrong, and 
 running designs revealed it** — so the 12/5/3 slot target should be set from the
 morning's numbers rather than from the plan.
 
+
+---
+
+## 2026-11-21 23:50 UTC — **GATE G2 PASSED.** Round 1 + resample complete, harvest running
+Gate: **G2 PASSED**, G3 in progress  |  Rung: F0  |  T-53.2h
+
+### Round 1 complete, on the measured estimate
+
+**230/230 backbones, 460 designs**, 13:03:48 → 21:11:33 UTC = **8.13 GPU-h** against the
+8.42 h estimate. E1 220, E2 140, E3 100 designs. No batch failed; the disk guard never
+fired; root never moved from 25 G.
+
+### Deep resample complete — **the documented "depth beats geometry" lesson reproduced locally**
+
+44 backbones (those with any round-1 sequence at `interaction_pae < 10`) × 16 draws,
+21:11 → 22:52 UTC = **1.68 GPU-h**, 200 designs.
+
+```
+                 n     min pae   median pae   pae < 10
+round 1        460       3.41       14.98      51  (11%)
+resample       200       3.58       13.65      51  (26%)
+```
+
+**The same absolute number of sub-10 designs from 200 designs instead of 460** — a
+2.4× improvement in hit rate per design, at a fifth of the GPU cost. `PIPELINE.md` §3
+rule 2 (~27× in prior campaigns) is directionally confirmed on this system.
+
+### The sequon prefilter: essential, and strongly bimodal
+
+```
+704 draws -> 200 sequon-free (28%)
+clean draws per backbone: mean 4.5, median 2, min 0, max 16
+backbones giving ZERO clean draws: 15/44 (34%)
+distribution: {0:15, 1:5, 2:4, 3:1, 4:1, 5:3, 7:2, 8:2, 9:3, 11:1, 13:4, 14:1, 15:1, 16:1}
+```
+
+**This is bimodal, not a smooth 28%.** A third of backbones produced a CDR sequon in
+*every one* of 16 draws; others produced almost none (13–16 clean). That is a property
+of the **backbone**, not of sampling luck — those geometries evidently want Asn and
+Ser/Thr at adjacent CDR positions, so ProteinMPNN places them every time.
+
+Two consequences worth carrying forward:
+
+1. The prefilter saved roughly **2,900 s of RF2** that would have folded designs already
+   dead on a hard gate.
+2. **Sequon-proneness is a cheap backbone-level screen.** Drawing 4 MPNN sequences and
+   counting sequons costs ~6 s and would identify the 34% of backbones that can never
+   yield an eligible design — before spending 80 s diffusing more like them. Worth
+   doing if there is another generation round; recorded rather than acted on now.
+
+### Pool as it stands
+
+**660 designs total, 102 with `interaction_pae < 10`.** The resample 200 are
+sequon-free by construction, so their eligibility rate should be near 100% versus ~42%
+in round 1 — which is exactly the fixable 60% of rejections identified earlier.
+
+### In flight
+
+Harvest of all 660 started 22:52 UTC, ~56 min elapsed, ETA ~00:28 UTC (CPU-bound at
+~8.7 s/design, dominated by interface SASA). Then Boltz-2 on up to 80 survivors
+(~2.7 GPU-h, ETA ~03:10 UTC), then rank/select and the draft submission.
+
+**Inefficiency noted, not corrected:** the GPU sits idle for the ~96-minute harvest
+because the chain runs stages strictly in sequence. Interleaving the harvest with the
+Boltz run would recover ~1.5 GPU-h. Not worth disturbing a healthy in-flight chain for
+it, but it is the obvious fix if another round is run.
+
