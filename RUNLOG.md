@@ -823,3 +823,87 @@ the correct number for a 2-design invocation; ~94 s is the marginal rate at batc
 Re-sizing once batch 0 completes — at the marginal rate the 230-backbone run costs
 roughly **9.7 GPU-h rather than 14**, which frees budget for deeper resampling.
 
+
+---
+
+## 2026-11-21 15:45–16:20 UTC — Manifest harvester, validated end-to-end on real data
+Gate: G2  |  Rung: F0  |  T-61.0h
+
+`scripts/06_harvest.py`, 15/15 self-test, then run against the **real pilot outputs** —
+not just synthetic fixtures — producing a 4-row, 53-column `candidates.tsv`.
+
+Full schema from `RANKING_AND_QC.md` §7 plus 8 extra measured provenance columns
+(`rf2_plddt`, both RMSD families, `hotspots_engaged`, `verdict`, and the H↔L negative
+control). Uncomputed metrics are literally `not_run` — asserted in the self-test, so a
+future change cannot quietly turn them into zeros.
+
+`arm_of()` finds the epitope arm by **searching** the path rather than indexing a fixed
+position: the pilot (`out/pilot/E1_n2/3_rf2/`) and production
+(`out/production/E1/b000/3_rf2/`) layouts differ in depth, and a positional index picks
+the wrong token silently. Self-tested on both shapes plus a no-arm path.
+
+### **75% of pilot designs fail on an N-glycosylation sequon in a CDR — and it is free to fix**
+
+```
+E1_0_dldesign_0   clean
+E1_0_dldesign_1   SEQUON  L1:NVS@6  L2:NNS@0  L2:NST@1
+E1_1_dldesign_0   SEQUON  H1:NIT@2
+E1_1_dldesign_1   SEQUON  H1:NIT@2  L2:NAS@0
+```
+
+3 of 4 (**n=4 — an observation, NOT a rate**; per CLAUDE.md nothing is acted on as a rate
+below n=100). But the mechanism is clear and does not need a large n to believe:
+ProteinMPNN places Asn and Ser/Thr in CDRs with no sequon awareness. In two designs it
+mutated the framework's native H1 `GFNIKDT` → `GFNITDT`, turning a harmless `N-I-K` into
+a glycosylation sequon `N-I-T`.
+
+`no_cdr_glycosylation` is a **hard eligibility gate** — a glycan in the paratope is
+computationally invisible and experimentally fatal — so every one of those designs is
+gone, not penalised.
+
+**The fix is an ordering change, not a modelling change.** MPNN costs 2.25 s/sequence;
+RF2 costs 26.5 s/design. Screening sequences for CDR sequons *before* spending RF2 on
+them inverts the economics:
+
+```
+current  : 2 seqs -> 2 RF2   = 2*2.25 + 2*26.5 = 57.5 s  -> ~0.5 clean designs
+filtered : 6 seqs -> ~1.5 RF2 = 6*2.25 + 1.5*26.5 = 53.3 s -> ~1.5 clean designs
+```
+
+Same GPU cost, **~3x the eligible output**.
+
+**Decision: production round 1 is NOT being disturbed.** The expensive, reusable asset is
+the *backbone* (94 s each); MPNN sequences are cheap and partly disposable. The planned
+deep-resample round already exists to add sequence depth on proven backbones, so that is
+where the pre-RF2 sequon filter goes. Interrupting a healthy 10-GPU-hour run to change a
+cheap downstream stage would be the wrong trade.
+
+Noted but **not** adopted: adding `N` to ProteinMPNN's `--omit-aas`. It would guarantee
+sequon-freedom but removes Asn from every CDR, which is a real loss of paratope chemistry
+for a problem that a cheap filter solves without any diversity cost.
+
+### Coherence check
+
+The one design that passes eligibility (`E1_0_dldesign_0`) is also the one with the
+**lowest liability penalty (12.3 vs 30.3–49.3)** and sits on the good backbone
+(`interaction_pae` 6.33, refold RMSD 6.75 Å vs 17–28 for backbone E1_1). The independent
+screens agree with each other, which is weak but real evidence that none of them is
+inverted.
+
+### Open question recorded, not silently resolved: which RMSD is the authors' "<2 Å"?
+
+The RFantibody README says "RMSD (design versus RF2 predicted) < 2 Å" without naming the
+quantity. RF2 emits two distinct families, and on the pilot they disagree sharply:
+
+| metric | meaning | pilot range |
+|---|---|---|
+| `framework_aligned_cdr_rmsd` | do the CDRs fold as designed | **0.92 – 1.73 Å** |
+| `framework_aligned_antibody_rmsd` | does the Fv fold as designed | 0.94 – 1.57 Å |
+| `target_aligned_antibody_rmsd` | does it **dock where designed** | **5.31 – 27.94 Å** |
+
+Under a `target_aligned < 2 Å` reading, **0 of 4** pass and plausibly near-0% of the whole
+campaign would. Under a `framework_aligned < 2 Å` reading, 4 of 4 pass and the criterion
+does no filtering at all. Neither alone is usable. Both are already recorded per-design in
+`candidates.tsv`; the ranking module will define the filter explicitly and label it
+`[ASSUMPTION]` rather than let a README ambiguity silently set the pass rate.
+
