@@ -1487,3 +1487,77 @@ FAILS"). Fixed to parse the `self-test: N/M passed` summary and the exit code in
 A test harness that cries wolf is worth fixing immediately — it is the thing you stop
 reading, and then it stops protecting you.
 
+
+---
+
+## 2026-11-21 13:50–14:05 UTC — Novelty Tier 2 added. **A scoring bug was hard-failing 25% of the pool.**
+Gate: G2  |  Rung: F0  |  T-63.0h
+
+### Tier 2 of the reference set is available after all
+
+`RANKING_AND_QC.md` lists Tier 2 (therapeutic antibodies) as "strongly desired" and
+Tier 3 as "if reachable", with academic hosts unverified. SabDab's *interactive* pages
+serve a 2 KB HTML application shell, but the **static download does work**:
+
+```
+200  636,357 B  .../static/downloads/TheraSAbDab_SeqStruc_OnlineDownload.csv
+     sha256 cc9402788297ed7b6ab3d676daa21953a6d28ebbd9cc78ec7248b19f74d49d6d
+```
+
+1133 therapeutics, dupilumab among them. **1072 usable paired entries** after filtering.
+Reference set is now **1076 entries: 4 tier-1 anti-IL-4Rα + 1072 clinical-stage
+therapeutics**, frozen with SHA256 and date.
+
+**Tier 2 contributes CDR-level comparison only.** Full-domain identity is deliberately
+*not* computed against it — many therapeutics use the same IGHV3-23/IGKV1-39 germlines we
+do, and `RANKING_AND_QC.md` §4 says high framework identity to a non-IL-4Rα antibody is
+"expected and fine". I also had to fix `screen_design` to restrict the full-domain check
+to `is_anti_il4ra` entries; without that, adding Tier 2 would have reintroduced the
+same whole-pool failure the gate fix earlier tonight was meant to prevent.
+
+### **The bug: a 2-residue reference scored 100% identical to our 10-residue CDR-H3**
+
+Adding Tier 2 took novelty failures from **0/20 to 5/20**. That looked like a real
+finding. It was not.
+
+```
+ours H3 = 'APIGGHALSH' (10 aa)   vs Cinpanemab  transferred H3 = 'AH'   (2 aa)  -> 1.0000
+ours H3 = 'SSGSNPSLSY' (10 aa)   vs Cepeprubart transferred H3 = 'SYGY' (4 aa)  -> 0.7500
+ours H3 = 'WVGNNWV'    (7 aa)    vs Galiximab   transferred H3 = 17 aa          -> 0.7143
+```
+
+**Two independent defects, both mine:**
+
+1. **`identity()` divided by the length of the SHORTER sequence.** I had written that it
+   was "deliberately conservative: it cannot be deflated by padding one side". That
+   reasoning is exactly backwards for a short reference — a 2-mer is trivially contained
+   in almost any 10-mer, so it matches *everything* at 1.0. Fixed to divide by the
+   **longer** sequence for CDR comparisons, where a length difference is a genuine
+   difference. A `denom="query"` mode is retained for the full-domain check, where the
+   reference legitimately carries extra residues (our 119 aa VH against a 222 aa Fab
+   heavy chain that includes CH1).
+2. **Degenerate transferred CDRs.** Alignment transfer collapsed some therapeutics' H3
+   to 2–4 residues — 32 of 1104 were shorter than 5. Those are transfer failures, not
+   CDR-H3s. Now dropped (`MIN_REF_CDRH3 = 5`), taking tier 2 from 1104 to 1072 entries.
+
+After both fixes, the same 20 designs: **20/20 pass novelty**, and the **maximum CDR-H3
+identity to any of 1076 references is 0.50** — comfortably clear of the 0.70 threshold.
+Nearest hits are plausible (Naratuximab 0.50, Rovalpituzumab 0.50, Tifcemalimab 0.50).
+
+That is now a defensible novelty story to put in front of GenScript in January: every
+design is at most 50% identical in CDR-H3 to any of four anti-IL-4Rα antibodies
+(including dupilumab) and 1072 clinical-stage therapeutics.
+
+**Had I shipped the first version, five perfectly novel designs in twenty would have been
+silently deleted for "matching" a two-residue string.**
+
+### Performance
+
+Screening against 1076 references cost 13 s/design naively. Added a two-stage
+nearest-neighbour search: a cheap ungapped best-offset identity shortlists all
+references, then exact affine-gap NW runs on the top 12. **Verified to agree with
+exhaustive NW on 10/10 real designs**, at ~33% lower total harvest cost (4m19s → 2m54s
+for 20 designs; the remainder is interface SASA, not novelty).
+
+Regression gate: **16/16 modules clean**, 05_novelty now 26/26.
+

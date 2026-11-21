@@ -49,6 +49,8 @@ THRESH = {
     "il4ra_full_identity_max": 0.85,
 }
 
+MIN_REF_CDRH3 = 5   # shorter transferred H3s are alignment artefacts, not CDRs
+
 REFS = {
     "6WGL": {"H": "A", "L": "B", "name": "dupilumab", "target_chain": "C",
              "note": "canonical anti-IL-4Ralpha therapeutic (Dupixent)"},
@@ -139,17 +141,71 @@ def nw_align(a, b, match=BLOSUM_MATCH, mismatch=BLOSUM_MISMATCH,
     return "".join(reversed(oa)), "".join(reversed(ob))
 
 
-def identity(a, b):
-    """Global percent identity = matches / length of the SHORTER sequence.
+def fast_identity(a, b, denom="max"):
+    """Ungapped best-offset identity. ~50x cheaper than affine-gap NW.
 
-    Shorter-sequence denominator is deliberately conservative: it cannot be deflated by
-    padding one side with extra residues, so it never under-reports similarity.
+    Used to SHORTLIST references; the exact NW identity is then computed only for the
+    top few. With 1108 references and ~500 designs, running full NW against every
+    reference costs ~13 s/design, which does not scale to the pool.
+    """
+    if not a or not b:
+        return 0.0
+    d = len(a) if denom == "query" else max(len(a), len(b))
+    if len(a) > len(b):
+        a, b = b, a
+    best = 0
+    for off in range(len(b) - len(a) + 1):
+        m = 0
+        for x, y in zip(a, b[off:]):
+            if x == y:
+                m += 1
+        if m > best:
+            best = m
+    return best / d if d else 0.0
+
+
+def nearest_by_identity(query, candidates, topk=12, denom="max"):
+    """(best_exact_identity, best_key) over `candidates` = [(key, seq), ...].
+
+    Shortlists with fast_identity, then runs exact NW identity on the top `topk`.
+    Exact where it matters (the nearest hit) and cheap where it does not.
+    """
+    if not query:
+        return 0.0, None
+    scored = [(fast_identity(query, s, denom), k) for k, s in candidates if s]
+    if not scored:
+        return 0.0, None
+    scored.sort(reverse=True)
+    best_i, best_k = 0.0, None
+    lookup = dict(candidates)
+    for _, k in scored[:topk]:
+        i = identity(query, lookup[k], denom)
+        if i > best_i:
+            best_i, best_k = i, k
+    return best_i, best_k
+
+
+def identity(a, b, denom="max"):
+    """Global percent identity. The DENOMINATOR CHOICE IS NOT COSMETIC.
+
+    denom="max"   : matches / length of the LONGER sequence. Correct for comparing two
+                    CDR loops, where a length difference is a real difference.
+    denom="query" : matches / len(a). Correct when `b` legitimately contains extra
+                    residues outside the region of interest -- e.g. our 119 aa VH
+                    against a 222 aa reference Fab HEAVY CHAIN that carries CH1.
+
+    This was originally min(len(a), len(b)), described as "conservative because it
+    cannot be deflated by padding". That reasoning is backwards for short references:
+    with a min denominator, Cinpanemab's transferred CDR-H3 of 'AH' (2 residues) scored
+    **1.0 identical** to our 10-residue 'APIGGHALSH', hard-failing a perfectly novel
+    design. 5 of 20 real designs were being rejected this way. See RUNLOG 2026-11-21.
     """
     if not a or not b:
         return 0.0
     aa, bb = nw_align(a, b)
     matches = sum(1 for x, y in zip(aa, bb) if x == y and x != "-")
-    return round(matches / min(len(a), len(b)), 4)
+    d = len(a) if denom == "query" else max(len(a), len(b))
+    return round(matches / d, 4) if d else 0.0
 
 
 def transfer_cdrs(query, ref_domain, ref_spans):
@@ -264,6 +320,49 @@ def build_reference_set(verbose=True):
     return ref
 
 
+def build_tier2(csv_path, max_entries=None, verbose=True):
+    """Tier 2: clinical-stage therapeutic antibodies from Thera-SAbDab.
+
+    These contribute **CDR-level comparison only**. Full-domain identity against them is
+    deliberately not computed: they are not IL-4Ra binders, so high framework identity to
+    them is expected and fine, and many use the same IGHV3-23 / IGKV1-39 germlines we do.
+    """
+    import csv as _csv
+    rows = list(_csv.DictReader(open(csv_path, encoding="utf-8-sig")))
+    out = []
+    for r in rows:
+        h = (r.get("HeavySequence") or "").strip()
+        l = (r.get("LightSequence") or "").strip()
+        if len(h) < 90 or len(l) < 80 or h.lower() in ("na", "none"):
+            continue
+        h = h.split()[0].upper()
+        l = l.split()[0].upper()
+        if set(h) - set("ACDEFGHIKLMNPQRSTVWY") or set(l) - set("ACDEFGHIKLMNPQRSTVWY"):
+            continue
+        cdrs = {}
+        cdrs.update(transfer_cdrs(h, HU4D5_VH,
+                                  {k: v for k, v in HU4D5_CDR_SPANS.items() if k[0] == "H"}))
+        cdrs.update(transfer_cdrs(l, HU4D5_VL,
+                                  {k: v for k, v in HU4D5_CDR_SPANS.items() if k[0] == "L"}))
+        # Alignment transfer occasionally collapses a loop to 2-4 residues. Those are
+        # transfer failures, not real CDR-H3s (32 of 1104 were shorter than 5), and a
+        # degenerate reference matches far too easily. Drop them rather than trust them.
+        if len(cdrs.get("H3", "")) < MIN_REF_CDRH3:
+            continue
+        out.append({
+            "id": r["Therapeutic"].strip(), "pdb": None, "tier": 2,
+            "note": f"{r.get('Format','')} / {r.get('Est. Status','')}".strip(" /"),
+            "is_anti_il4ra": False,
+            "vh": None, "vl": None,          # intentionally not stored: CDR-level only
+            "cdrs": cdrs,
+        })
+        if max_entries and len(out) >= max_entries:
+            break
+    if verbose:
+        print(f"[tier2] {len(rows)} therapeutics in file -> {len(out)} usable paired entries")
+    return out
+
+
 # ---------------------------------------------------------------- screen
 
 def screen_design(vh, vl, cdrs, ref):
@@ -271,30 +370,39 @@ def screen_design(vh, vl, cdrs, ref):
     cdr_concat = "".join(cdrs[k] for k in sorted(cdrs))
     h3 = cdrs.get("H3", "")
 
-    best_h3 = {"ref": None, "identity": 0.0, "seq": None}
-    best_concat = {"ref": None, "identity": 0.0}
     best_full = {"ref": None, "identity": 0.0, "chain": None}
     exact = None
 
+    h3_cands, concat_cands = [], []
     for e in ref["entries"]:
         rh3 = e["cdrs"].get("H3", "")
-        if rh3 and h3:
-            i = identity(h3, rh3)
-            if i > best_h3["identity"]:
-                best_h3 = {"ref": e["id"], "identity": i, "seq": rh3}
-            if h3 == rh3:
+        if rh3:
+            h3_cands.append((e["id"], rh3))
+            if h3 and h3 == rh3:
                 exact = e["id"]
         rconcat = "".join(e["cdrs"][k] for k in sorted(e["cdrs"]))
         if rconcat:
-            i = identity(cdr_concat, rconcat)
-            if i > best_concat["identity"]:
-                best_concat = {"ref": e["id"], "identity": i}
-        for chain, s in (("VH", e["vh"]), ("VL", e["vl"])):
-            q = vh if chain == "VH" else vl
-            if s and q:
-                i = identity(q, s)
-                if i > best_full["identity"]:
-                    best_full = {"ref": e["id"], "identity": i, "chain": chain}
+            concat_cands.append((e["id"], rconcat))
+
+    i, k = nearest_by_identity(h3, h3_cands)
+    best_h3 = {"ref": k, "identity": i,
+               "seq": dict(h3_cands).get(k) if k else None}
+    i, k = nearest_by_identity(cdr_concat, concat_cands)
+    best_concat = {"ref": k, "identity": i}
+
+    for e in ref["entries"]:
+        # Full-domain identity is ONLY meaningful against anti-IL-4Ra antibodies.
+        # RANKING_AND_QC.md s4: "Full VH/VL identity to a non-IL-4Ra antibody: high is
+        # expected and fine. This is the standardised framework." With tier 2 loaded
+        # (1133 therapeutics, many on IGHV3-23/IGKV1-39), comparing against all of them
+        # would flag every design for sharing a common human germline framework.
+        if e.get("is_anti_il4ra"):
+            for chain, s in (("VH", e.get("vh")), ("VL", e.get("vl"))):
+                q = vh if chain == "VH" else vl
+                if s and q:
+                    i = identity(q, s, denom="query")
+                    if i > best_full["identity"]:
+                        best_full = {"ref": e["id"], "identity": i, "chain": chain}
 
     fails = []
     if exact:
@@ -362,6 +470,14 @@ def self_test():
     check("nw: identical sequences align without gaps",
           nw_align("ACDEFG", "ACDEFG") == ("ACDEFG", "ACDEFG"))
     check("identity: identical -> 1.0", identity("ACDEFGHIK", "ACDEFGHIK") == 1.0)
+    check("identity: a 2-mer inside a 10-mer is NOT 1.0 (the Cinpanemab artefact)",
+          identity("APIGGHALSH", "AH") < 0.3)
+    check("identity: denom=max penalises a length mismatch",
+          identity("AAAAAAAAAA", "AAAAA") == 0.5)
+    check("identity: denom=query ignores extra residues on the REFERENCE only",
+          identity("AAAAA", "AAAAAWWWWWWWWWW", denom="query") == 1.0)
+    check("identity: a genuine near-copy still scores high",
+          identity("WGYAMDY", "WGYAMDW") > 0.8)
     check("identity: disjoint -> low", identity("AAAAAAAA", "WWWWWWWW") < 0.2)
     check("identity: one substitution in 10 -> 0.9",
           abs(identity("ACDEFGHIKL", "ACDEFGHIKW") - 0.9) < 1e-9)
@@ -422,6 +538,36 @@ def self_test():
     check("screen: CDR-H3 differing by 1 of 7 (0.86) HARD FAILS the 0.70 threshold",
           near["novelty_status"] == "fail")
 
+    # tier 2 must NOT trigger the full-identity gate
+    ref2 = {"thresholds": THRESH, "entries": [
+        {"id": "some_therapeutic", "tier": 2, "is_anti_il4ra": False,
+         "vh": HU4D5_VH, "vl": HU4D5_VL,
+         # H3 must be DISSIMILAR to the query (so the framework-sharing test is not
+         # confounded by a CDR hit) but not orthogonal (so nearest_ref_id is populated).
+         "cdrs": {"H3": "SKLRPTVWMD", "L3": "SDQVWKTRAE"}},
+    ]}
+    r2 = screen_design(HU4D5_VH, HU4D5_VL,
+                       {"H1": "GFDLTNV", "H2": "NPISGK", "H3": "SGFGVRSLHH",
+                        "L1": "KLSKPAEVS", "L2": "KSTIRAP", "L3": "SAYDRLTGLT"}, ref2)
+    check("tier 2: identical framework to a NON-IL-4Ra therapeutic does not fail "
+          "(the framework is expected to be shared)", r2["novelty_status"] != "fail")
+    check("tier 2: full-domain identity is not even measured against tier 2",
+          r2["nearest_il4ra_identity"] == 0.0)
+    check("tier 2: CDR-H3 is still compared against tier 2",
+          r2["nearest_ref_id"] == "some_therapeutic"
+          and 0.0 < r2["nearest_ref_cdrh3_identity"] < THRESH["cdrh3_identity_max"])
+    # and a tier-2 CDR-H3 that IS too close must still hard-fail
+    ref2b = {"thresholds": THRESH, "entries": [
+        {"id": "close_therapeutic", "tier": 2, "is_anti_il4ra": False,
+         "vh": None, "vl": None,
+         "cdrs": {"H3": "SGFGVRSLAA", "L3": "SAYDRLTGAA"}},
+    ]}
+    r2b = screen_design(HU4D5_VH, HU4D5_VL,
+                        {"H1": "GFDLTNV", "H2": "NPISGK", "H3": "SGFGVRSLHH",
+                         "L1": "KLSKPAEVS", "L2": "KSTIRAP", "L3": "SAYDRLTGLT"}, ref2b)
+    check("tier 2: a CDR-H3 too close to a THERAPEUTIC antibody still hard-fails",
+          r2b["novelty_status"] == "fail")
+
     print(f"\nself-test: {sum(ok)}/{len(ok)} passed")
     return all(ok)
 
@@ -430,12 +576,34 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--build", action="store_true")
+    ap.add_argument("--tier2-csv",
+                    default=str(NOV / "raw_therasabdab" / "TheraSAbDab_SeqStruc.csv"))
     a = ap.parse_args()
     if a.self_test:
         print("05_novelty.py self-test (synthetic sequences)")
         sys.exit(0 if self_test() else 1)
     if a.build:
-        build_reference_set()
+        ref = build_reference_set()
+        t2p = Path(a.tier2_csv)
+        if t2p.exists():
+            import hashlib as _h
+            t2 = build_tier2(t2p)
+            ref["entries"].extend(t2)
+            ref["_frozen"]["tier2_therapeutic"] = {
+                "source": "Thera-SAbDab SeqStruc online download",
+                "file": t2p.name,
+                "sha256": _h.sha256(t2p.read_bytes()).hexdigest(),
+                "n_entries": len(t2),
+                "scope": "CDR-level comparison only; full-domain identity is NOT computed "
+                         "against tier 2, because high framework identity to a non-IL-4Ra "
+                         "therapeutic is expected and fine (RANKING_AND_QC.md s4).",
+            }
+            (NOV / "reference_set.json").write_text(json.dumps(ref, indent=2))
+            print(f"[write] reference set now {len(ref['entries'])} entries "
+                  f"(tier 1: {sum(1 for e in ref['entries'] if e['tier']==1)}, "
+                  f"tier 2: {len(t2)})")
+        else:
+            print(f"[tier2] {t2p} not present -- tier 2 stays not_run")
         print("\n[done] reference set frozen")
     else:
         ap.error("use --build or --self-test")
