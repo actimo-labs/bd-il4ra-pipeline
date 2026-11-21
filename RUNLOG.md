@@ -1100,3 +1100,57 @@ fully-passing candidates for 20 slots — adequate, with room for diversity. **I
 not hold, the deep-resample round is the lever**, and the sequon prefilter alone should
 lift the eligible fraction from ~55% toward ~100% of folded designs.
 
+
+---
+
+## 2026-11-21 13:34 UTC — Overnight chain armed. **Framework-arm decision: germline arm DROPPED.**
+Gate: G2  |  Rung: F0  |  T-63.4h
+
+### Overnight chain running in tmux session `chain`
+
+`scripts/13_overnight_chain.sh` is waiting on round 1 and will then run, unattended:
+
+1. **deep resample** — 12 sequences on each of up to 60 backbones that already have a
+   sequence with `interaction_pae < 10`, with the sequon prefilter between MPNN and RF2
+2. **harvest** production + resample into `candidates.tsv`
+3. **Boltz-2 cross-check** on up to 80 survivors (~2.7 GPU-h at the measured 120.6 s)
+4. **rank + select**, then a **last-known-good snapshot** and a draft submission file
+
+Every stage is resumable, disk-guarded (aborts below 10 GB on root), and checkpointed.
+Nothing in it submits, pushes, or spends Geodesic credits.
+
+The Boltz merge step **asserts a non-empty full-`candidate_id` join** before writing —
+CLAUDE.md §6 trap 5, where a prefix match silently blanked an entire comparison in a
+prior campaign.
+
+### Framework arm decision (the addendum delegates this): **run hu4D5-8 only.**
+
+`TARGET_PREP.md` §5 asks for two frameworks, hu4D5-8 and a human germline
+(IGHV3-23/IGKV1-39), calling framework diversity "cheap insurance". **On this box it is
+not cheap, and I am dropping it.** Reasons, in order of weight:
+
+1. **RFantibody ships exactly two HLT frameworks** — `hu-4D5-8_Fv.pdb` and
+   `h-NbBCII10.pdb`. The second is a **nanobody**, which cannot be submitted (the
+   template requires both a heavy and a light chain). So the only validated **Fv**
+   framework available is hu4D5-8. A germline framework would be the experimental arm of
+   an experimental method, with no reference behaviour to compare against.
+2. **Building a germline HLT needs Chothia numbering, which we cannot get cleanly.**
+   ANARCI and hmmer are not installed, and SabDab's structure endpoint returns a 2,178-byte
+   HTML application shell rather than a numbered PDB
+   (`opig.stats.ox.ac.uk/.../sabdab/pdb/1n8z/?scheme=chothia` → HTML, both http and https).
+   I could transfer CDR boundaries by alignment from hu4D5-8 — `05_novelty.transfer_cdrs`
+   already does exactly that — but that would mean handing RFdiffusion a framework whose
+   loop annotations were inferred by my own alignment code, unvalidated, at 1am.
+3. **Diversity is already carried elsewhere.** Three independent, well-separated epitopes
+   (≥25 Å apart, verified) plus deep CDR-H3 diversity from the resample round, with an
+   explicit ≤3-per-cluster cap at selection.
+4. **The GPU is better spent on depth.** `PIPELINE.md` §3 rule 2 puts deep resampling at
+   ~27× the hit rate per GPU-hour of more geometry; our own measurement says a new
+   sequence is 6× cheaper than a new backbone.
+
+**This is reversible and I have left it reversible.** If the user wants the arm in the
+morning, the route is: pick an IGHV3-23/IGKV1-39 Fab from the PDB, trim to V domains,
+transfer CDR spans with `transfer_cdrs`, write HLT, and run `11_run_production.sh` with
+the new framework. Roughly 3–4 GPU-h. `sprint.yaml` still lists the germline framework
+with `hlt_pdb: null` — it is **not** written off, just not built tonight.
+
