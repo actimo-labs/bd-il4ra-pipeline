@@ -168,6 +168,14 @@ provisional_funnel_n20:
   interaction_pae_lt10_frac: 0.15
   framework_aligned_cdr_rmsd_le2_frac: 0.90
   all_three_frac: 0.15
+cross_arm_n80:                 # n=80 (E1 40, E2 20, E3 20). Observation, not a rate.
+  E1: {pae_median: 15.08, pae_lt10: "4/40", eligible: "17/40", masked_frac_median: 0.12, hotspots_mean: 2.25, hard_pass: "3/40"}
+  E2: {pae_median: 15.18, pae_lt10: "1/20", eligible: "6/20",  masked_frac_median: 0.35, hotspots_mean: 0.25, hard_pass: "0/20"}
+  E3: {pae_median: 14.95, pae_lt10: "3/20", eligible: "9/20",  masked_frac_median: 0.24, hotspots_mean: 1.55, hard_pass: "1/20"}
+  note: "E1 engages hotspots best despite the WEAKEST static patch score -- the structural
+         prediction that E2/E3 would outperform E1 was wrong. E2 binds the intended epitope
+         ~1 loop off its nominated hotspots; observed preference R59,I75,G106,Q107.
+         New hard gate masked_contact_frac <= 0.40 [ASSUMPTION]."
   note: "target_aligned_antibody_rmsd < 2A passes 0/20 (min 2.62) -- that reading of the
          RFantibody README is unusable; framework_aligned_cdr_rmsd <= 2A is used instead
          as the hard self-consistency cut. [ASSUMPTION]"

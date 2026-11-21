@@ -1588,3 +1588,99 @@ reference CDRs, clustering identity). The common root is a percent-identity deno
 chosen without asking what a length *mismatch* should mean. Worth stating because the
 fourth instance, if there is one, will look the same.
 
+
+---
+
+## 2026-11-21 14:05–14:55 UTC — Cross-arm comparison, and a gap in the glycan strategy
+Gate: G2  |  Rung: F0  |  T-62.6h
+
+First comparison with all three arms producing. **n=80 (E1 40, E2 20, E3 20) — still
+below the n=100 bar for acting on a rate, but the E2 effect below is not a marginal rate
+difference.**
+
+```
+arm    n  pae med  pae min  pae<10   eligible  maskfrac  hotspots  hard-pass
+E1    40    15.08     4.30    4/40      17/40      0.12    2.25/4       3/40
+E2    20    15.18     7.64    1/20       6/20      0.35    0.25/4       0/20
+E3    20    14.95     5.25    3/20       9/20      0.24    1.55/4       1/20
+```
+
+### My structural prediction was wrong, and in an instructive direction
+
+At target-prep I wrote that **E2 and E3 are "measurably better design targets than E1"**
+on patch metrics (E2: 5 hydrophobic / 882 Å²; E3: 6 / 970 Å²; E1: 4 / 666 Å²), and
+flagged that the 12/5/3 slot split might need to move toward E2.
+
+**The generative behaviour does not follow the static patch score.** E1 — the weakest
+patch on paper — engages its hotspots best (2.25/4, and all four of its hotspots are the
+four most-contacted residues across 40 designs) and has the lowest glycan overlap.
+**E2 engages essentially nothing (0.25/4).** A static surface score predicted the wrong
+ordering, and only running designs revealed it.
+
+### The gap: the glycan mask never reached the crop
+
+Looking at *where* E2's designs actually bind exposed something I had got wrong at target
+prep. **The glycan mask filtered epitope and hotspot SELECTION, but the masked residues
+are still physically present in the cropped target**, and nothing stops RFdiffusion
+docking onto them:
+
+```
+crop composition:   E1 37/87 masked (43%)   E2 27/82 (33%)   E3 21/59 (36%)
+observed drift:     E1 median 0.12 of contacts on masked surface
+                    E2 median 0.35          E3 median 0.28
+```
+
+And it matters: designs with >0.50 of contacts on masked surface engaged **0.20/4**
+hotspots, versus **1.62/4** for designs below 0.15.
+
+**A design burying a third of its paratope under an assumed glycan models beautifully
+and gives zero assay signal.** That is the exact failure mode `TARGET_PREP.md` §2 calls
+"the most likely silent failure mode in this entire campaign", and my mask only
+half-prevented it.
+
+**Fix applied** (scoring, not re-cropping): `masked_contact_frac` is now computed per
+design, recorded in the manifest, used as a ranked geometry signal, and hard-gated at
+**>0.40**. Set permissively on purpose — the mask is a 10 Å modelling assumption, not a
+measurement, and stacking a tight cliff on an assumption discards real designs. At 0.40
+it costs **none** of the currently-passing designs while removing the clear offenders.
+Re-cropping to physically delete masked residues was considered and **rejected**: it
+would punch holes in the fold and expose fresh artificial hydrophobic surface, which is
+plausibly worse than the problem.
+
+### E2 is not failing — my verdict label was
+
+Before writing E2 off, I checked what its designs actually touch. **8 of their 12
+most-contacted residues are clean unmasked surface, 4 are E2 epitope residues
+(R59, G106, Q107, Q108), and the clean set spans 23.1 Å — compact enough for one
+paratope.** E2 is binding the intended patch about one loop away from the four hotspots
+I nominated.
+
+So the honest reading is "my hotspot choice for E2 was mediocre", not "E2 is a dead
+arm". The `verdict` column said `DOCKED OFF-TARGET` on 17/20 E2 designs, which is
+actively misleading and would have discarded the arm at selection. Replaced with a
+ladder that separates the two cases:
+
+```
+UNDOCKED / WEAK / DOCKED ON MASKED SURFACE / DOCKED ON HOTSPOTS
+         / DOCKED ON EPITOPE (off-hotspot, NN% of contacts on epitope)
+         / DOCKED OFF-EPITOPE
+```
+
+**Decision: E2 continues unchanged.** Its remaining 50 backbones are not re-pointed at
+new hotspots. Reasons: the arm is producing on-epitope binders; n=20 is too thin to
+re-tune a hotspot set on; changing hotspots mid-run makes the arm inhomogeneous and
+muddies the record; and the masked-fraction gate plus ranking already handle the bad
+tail. If the user wants E2 re-pointed in the morning, the observed preference is
+**R59, I75, G106, Q107**.
+
+### Yield, and why the resample round is now the main event
+
+Hard-filter pass rate is **4/80 = 5%**. Rejections split **48 eligibility (all CDR
+sequons) / 28 interaction_pae**. Straight-lining 5% over the ~460-design round gives
+~23 passing — enough for 20 slots but with almost no diversity margin.
+
+**The sequon losses are the fixable 60%.** The deep-resample round draws 16 sequences per
+proven backbone and screens them for sequons *before* RF2, so that entire rejection
+category largely disappears there. That round, already chained, is where the usable pool
+will actually come from — not round 1.
+
