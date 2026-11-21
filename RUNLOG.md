@@ -907,3 +907,61 @@ does no filtering at all. Neither alone is usable. Both are already recorded per
 `candidates.tsv`; the ranking module will define the filter explicitly and label it
 `[ASSUMPTION]` rather than let a README ambiguity silently set the pass rate.
 
+
+---
+
+## 2026-11-21 13:22 UTC — **CORRECTION: timestamps and T− figures in my earlier entries are wrong**
+Gate: G2  |  Rung: F0  |  **T-63.6h (actual)**
+
+This log is append-only, so the earlier entries stand as written and this corrects them.
+
+**The wall-clock times in my section headers from "PILOT COMPLETE" onward drifted ahead
+of the real clock, by up to ~1h50m.** I wrote them from my own running estimate instead
+of reading `date -u`. The **sequence** of events and every **measured duration** is
+correct; only the absolute times and the T− figures are wrong.
+
+Ground truth, from file mtimes and `git log`:
+
+| event | **actual UTC** | as I logged it |
+|---|---|---|
+| session start | 12:27:59 | 12:28 ✓ |
+| target prep / epitopes frozen | 12:43–12:54 | 12:45–13:20 |
+| crops + framework | 12:54:34 | — |
+| **pilot ran** | **12:46:57 – 12:54:40** | 12:46–14:40 |
+| interface module + SASA fix committed | 12:55:10 | 13:20–14:05 |
+| **production launched** | **13:03:48** | 14:45 |
+| QC module committed | 13:07:07 | — |
+| novelty reference set frozen | 13:10:38 | 15:00–15:40 |
+| harvester committed | 13:17:23 | 15:45–16:20 |
+| **now** | **13:21:54** | — |
+
+So the whole session to this point is **54 minutes**, not the ~4 hours my headers imply,
+and the deadline is **T-63.6h**, not the T-61.0h I last wrote. Everything is further
+ahead of schedule than the log claimed, not behind.
+
+**Durations that were measured rather than estimated are unaffected** and remain valid:
+pilot wall clock 7m43s (12:46:57→12:54:40, confirmed), RFdiffusion 174.0 s/design at
+batch 2, ProteinMPNN 2.25 s/seq, RF2 26.5 s/design, `uv sync` 24.4 s.
+
+### Corrected production throughput, from batch 0 (now complete)
+
+```
+2026-11-21T13:17:15Z  E1  b000  rfdiffusion   10 backbones   807 s  -> 80.7 s/backbone
+2026-11-21T13:17:45Z  E1  b000  proteinmpnn   20 sequences    30 s  -> 1.50 s/sequence
+```
+
+Both are **well below** the pilot figures (174 s/design, 2.25 s/seq) because the pilot
+ran `num_designs=2`, amortising ~60–90 s of model load and IGSO3 setup over 2 designs
+instead of 10.
+
+Re-sizing round 1 on the marginal rates:
+
+```
+per backbone = 80.7 + 2*(1.5 + ~24) = ~132 s
+230 backbones * 132 s = ~8.4 GPU-h    (not the 14.0 h estimated at launch)
+```
+
+Round 1 should therefore finish about **21:30 UTC Sat (08:30 AEDT Sun)** — roughly when
+the user wakes — and frees **~5.6 GPU-h** against the original plan. Per `PIPELINE.md` §3
+rule 2 that surplus goes to **deep resampling**, not to more backbones.
+
