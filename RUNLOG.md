@@ -532,3 +532,138 @@ executably, rather than just written down. `score_hlt()` also hard-asserts the c
 is exactly {H, L, T} and refuses to score a complex with a missing light chain in strict
 mode, because that would silently turn an Fv score into a VHH score.
 
+
+---
+
+## 2026-11-21 12:46–14:40 UTC — PILOT COMPLETE. **GATE G1 PASSED.**
+Gate: **G1 PASSED**  |  Rung: F0  |  T-62.4h
+
+2 designs x 2 MPNN sequences, E1, hu4D5-8 framework, run in tmux via
+`scripts/10_run_pilot.sh`. All three stages returned rc=0.
+
+### MEASURED throughput (the G2 sizing numbers — measured, not estimated)
+
+```
+RFdiffusion_Ab   : 174.0 s/design   (Fv 223aa + E1 crop 87aa = 310 residues, n=2)
+ProteinMPNN      :   2.25 s/sequence  (4.5 s/backbone at 2 seqs; 9.0 s total)
+RF2_ab           :  26.5 s/design   (10 recycles, n=4)
+```
+
+Cost per backbone at k MPNN sequences: **174 + k x 28.75 s**. RFdiffusion dominates
+overwhelmingly, which is the quantitative basis for the deep-resample strategy: a new
+backbone costs 174 s, another sequence on an existing backbone costs **28.75 s — 6x
+cheaper**. `PIPELINE.md` §3 rule 2 is correct for this system and now has a local number.
+
+GPU peaked at 75% utilisation, 2277 MiB. `torch.cuda.is_available()` was True. Root disk
+unchanged at 25 G. Total pilot wall clock 7m43s.
+
+### Acceptance criteria — all seven ticked
+
+- [x] **Three chains, IDs exactly H, L, T** — H=119, L=106, T=87 residues
+- [x] **Diffused regions are the CDR loops, not framework.** Verified by sequence, not by
+      eye: RFdiffusion output is the hu4D5-8 framework *verbatim* with poly-G only at CDR
+      positions. CDR lengths varied inside the requested ranges (H3 7→10 and 7→13 against
+      `H3:5-13`; L1 11→9; L3 9→10). ProteinMPNN then designed exactly **49** positions =
+      7+6+10+9+7+10, i.e. the six CDRs and nothing else.
+- [x] **CDR loops contact the intended epitope** — see table below; 62–69% of target
+      contacts are on E1 for the good backbone, and hotspots V94/D150/Y152 are engaged
+      by 3 of 4 designs
+- [x] **RF2 produced non-null interface metrics** — 13 `SCORE` lines, see below
+- [x] **Metrics computed on (H+L) vs T, not globally** — both RF2's own metric and ours
+- [x] **CUDA true, GPU utilisation non-zero** — 75%
+- [x] **s/design recorded for all three stages**
+
+### RF2 does not write a scorefile — it embeds SCORE lines in each output PDB
+
+There is no `.sc` or `.csv`. `write_output()` puts them in the PDB. 13 metrics per design:
+`interaction_pae`, `pae`, `pred_lddt`, `target_aligned_antibody_rmsd`,
+`target_aligned_cdr_rmsd`, `framework_aligned_antibody_rmsd`, `framework_aligned_cdr_rmsd`,
+and `framework_aligned_{H1,H2,H3,L1,L2,L3}_rmsd`. Anyone looking for a scorefile will
+conclude the stage failed. It did not.
+
+### **`interaction_pae` IS the (H+L) vs T metric. Verified, not assumed.**
+
+This was the single most important thing to check, and the answer is the opposite of what
+the chain-pair trap would lead you to expect. `model_runner.py:158` computes
+`pae[0, ~pose.same_chain].mean()`. Reading `pose_util.py:161-170`:
+
+```python
+same_chain[:self.target_length, :self.target_length] = True
+same_chain[self.target_length:, self.target_length:] = True
+```
+
+`same_chain` has only **two** blocks — target, and *the whole antibody* — and
+`write_output` confirms the internal order is **T,H,L**. So the H↔L block sits *inside*
+`same_chain` and is excluded. Verified numerically for our dimensions (T=87, H=116, L=107):
+
+```
+~same_chain selects 38802 cells;  2*Lt*(Lh+Ll) = 38802   MATCH
+H<->L cells inside ~same_chain: 0   (must be 0)
+```
+
+**So RF2's shipped `interaction_pae` is safe to use directly as the primary filter.**
+
+### Results
+
+```
+design                 ipae  plddt  tgt_ab_rmsd  fw_cdr_rmsd  H3_rmsd    BSA  cont   hs  on-epi
+E1_0_dldesign_0        6.33   0.89         6.75         1.73     3.37   1554    57  2/4     69%
+E1_0_dldesign_1        4.60   0.90         5.31         0.92     1.17   1529    55  2/4     62%
+E1_1_dldesign_0       17.33   0.90        22.64         1.44     2.35    575    20  1/4     31%
+E1_1_dldesign_1       18.31   0.89        27.94         1.57     2.60   1184    72  1/4     31%
+```
+
+**One of two backbones is good, and the filter cleanly separates them.** `interaction_pae`
+4.60/6.33 (both under the authors' <10) for backbone E1_0 versus 17.33/18.31 for E1_1, and
+it tracks `target_aligned_antibody_rmsd` (5.31/6.75 Å vs 22.64/27.94 Å) — i.e. RF2 places
+the E1_1 antibody somewhere completely different from where it was designed. The filter is
+discriminating on our system. **n=2 backbones — this is an observation, not a rate.**
+
+### The chain-pair trap, demonstrated on real data
+
+```
+design                H<->L BSA    (H+L)<->T BSA
+E1_0_dldesign_0            1771             1554
+E1_0_dldesign_1            1497             1529
+E1_1_dldesign_0            1523              575     <- FAILING design
+E1_1_dldesign_1            1563             1184
+```
+
+**H↔L buries ~1500–1770 Å² in all four, including both failures.** A global metric would
+rate `E1_1_dldesign_0` — true interface 575 Å², ipae 17.3, refold RMSD 22.6 Å — as
+perfectly healthy. This is `CLAUDE.md` §6 trap 3 reproduced on our own output.
+
+### Target residues actually contacted (crop/1IAR numbering)
+
+```
+T 43 = L68   4/4  <- E1        T 72 = D97   3/4
+T 44 = S69   4/4               T125 = D150  3/4  <- HOTSPOT
+T 45 = E70   3/4               T127 = Y152  3/4  <- HOTSPOT
+T 69 = V94   3/4  <- HOTSPOT   T 42 = L67   2/4  <- E1
+```
+
+Three of four hotspots are engaged. **D92 (T67) is the one that is not** — the most
+charged of the four, consistent with the README's warning about polar sites. Candidate
+for replacement if E1 underperforms; not changing it on n=2.
+
+### A SECOND numbering bug, caught by the epitope accounting
+
+The first scoring pass reported **all four designs as `DOCKED OFF-TARGET`, 0/4 hotspots**.
+That was wrong, and it was my bug, not the designs'.
+
+**RFdiffusion renumbers the entire complex sequentially across chains**: output is
+H=1–119, L=120–225, **T=226–312**. The input crop is numbered 9–188 in 1IAR chain B
+numbering. The two integer sets are *disjoint*, so every epitope and hotspot comparison
+silently scored zero. This is `CLAUDE.md` trap 4 — which I had guarded on the **input**
+side in `03_crop_hlt.py` and completely missed on the **output** side.
+
+Fixed with `build_target_map()` in `04_interface.py`: maps output chain T → input crop
+numbering positionally, and **asserts the amino-acid identity of every mapped residue**
+before the mapping is trusted. Five new self-tests, including identity-mismatch and
+length-mismatch cases that must raise. After the fix all four designs are `DOCKED` with
+1–2 hotspots engaged.
+
+**Worth stating plainly: a silent artefact of exactly this kind would have made every
+epitope metric in the campaign read zero, and the natural misreading is "our hotspots are
+bad, pick different ones."** Self-test count for `04_interface.py` is now 22/22.
+

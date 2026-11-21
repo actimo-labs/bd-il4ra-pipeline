@@ -95,7 +95,41 @@ def score_pair(group_a, group_b, label_a, label_b):
 
 # ---------------------------------------------------------------- main API
 
-def score_hlt(path, epitope_residues=None, hotspots=None, strict=True):
+def build_target_map(target_chain, crop_residues, crop_seq_by_resnum):
+    """Map RF2/RFdiffusion output chain-T numbering back to input crop numbering.
+
+    CLAUDE.md trap 4, in the direction that is easy to miss. RFdiffusion renumbers the
+    WHOLE complex sequentially across chains -- for our system H=1..119, L=120..225,
+    T=226..312 -- so output T numbers have nothing to do with the crop's 1IAR numbering
+    (9..188). Comparing them directly silently reports every design as binding
+    off-epitope, because the two integer sets simply do not intersect.
+
+    The i-th residue of output chain T is the i-th residue of the sorted crop. We assert
+    that correspondence on AMINO ACID IDENTITY for every residue before trusting it, so
+    a changed convention fails loudly instead of producing a plausible wrong answer.
+    """
+    out_res = sorted(target_chain, key=lambda r: r.resnum)
+    crop = sorted(crop_residues)
+    _assert(len(out_res) == len(crop),
+            f"output chain T has {len(out_res)} residues but the crop has {len(crop)}; "
+            f"cannot establish a positional mapping")
+    mapping, mismatches = {}, []
+    for r, p in zip(out_res, crop):
+        exp = crop_seq_by_resnum.get(p)
+        if exp is not None and r.one != exp:
+            mismatches.append((r.resnum, r.one, p, exp))
+        mapping[r.resnum] = p
+    _assert(not mismatches,
+            f"positional target mapping failed identity check at {len(mismatches)} "
+            f"position(s), first: output T{mismatches[0][0]}={mismatches[0][1]} vs "
+            f"crop T{mismatches[0][2]}={mismatches[0][3]}. The renumbering convention "
+            f"changed -- do not trust any epitope accounting until this is fixed."
+            if mismatches else "")
+    return mapping
+
+
+def score_hlt(path, epitope_residues=None, hotspots=None, strict=True,
+              target_map=None):
     """Score one HLT complex. Returns a dict. Asserts the H/L/T chain selection.
 
     epitope_residues / hotspots: target (chain T) residue numbers, post-crop numbering.
@@ -148,7 +182,24 @@ def score_hlt(path, epitope_residues=None, hotspots=None, strict=True):
         res["H_vs_L_NEGATIVE_CONTROL"] = hl
 
     # ---- did we hit the epitope we aimed at? ----
-    contacted = set(hl_t["contact_residues_b"])
+    # Remap output T numbering -> input crop numbering FIRST. See build_target_map().
+    raw_contacted = set(hl_t["contact_residues_b"])
+    if target_map:
+        unknown = raw_contacted - set(target_map)
+        _assert(not unknown,
+                f"{Path(path).name}: contacted target residues {sorted(unknown)} are not "
+                f"in the output->crop map")
+        contacted = {target_map[p] for p in raw_contacted}
+        res["target_numbering"] = {
+            "note": "output chain T is renumbered sequentially by RFdiffusion; "
+                    "remapped to input crop (1IAR chain B) numbering for all epitope "
+                    "and hotspot accounting",
+            "output_T_range": [min(target_map), max(target_map)],
+            "crop_range": [min(target_map.values()), max(target_map.values())],
+        }
+        hl_t["contact_residues_b_cropnum"] = sorted(contacted)
+    else:
+        contacted = raw_contacted
     if epitope_residues:
         inter = sorted(contacted & set(epitope_residues))
         res["epitope"] = {
@@ -164,7 +215,11 @@ def score_hlt(path, epitope_residues=None, hotspots=None, strict=True):
         # binder CDR residues < 8 A. We use the simpler "is it contacted" plus Cbeta.
         bcb = np.array([r.cbeta() for r in binder if r.cbeta() is not None])
         hit = {}
-        byn = {r.resnum: r for r in target}
+        # key the target residues by CROP numbering so hotspot lookups line up
+        if target_map:
+            byn = {target_map[r.resnum]: r for r in target if r.resnum in target_map}
+        else:
+            byn = {r.resnum: r for r in target}
         for p in hotspots:
             if p not in byn or byn[p].cbeta() is None:
                 hit[p] = None
@@ -327,6 +382,29 @@ def self_test():
               lambda: _assert(abs(score_hlt(unbound)["HL_vs_T"]["bsa_a2"]) < 1.0,
                               "duplicate resnums across H/L/T corrupted the SASA"))
 
+        # ---- build_target_map: the output-renumbering trap (CLAUDE.md trap 4) ----
+        class R:
+            def __init__(self, n, o):
+                self.resnum, self.one = n, o
+
+        # output T is 226..229, crop is 9,42,43,70 -- disjoint integer sets
+        out_T = [R(226, "D"), R(227, "V"), R(228, "Y"), R(229, "L")]
+        crop = [9, 42, 43, 70]
+        cseq = {9: "D", 42: "V", 43: "Y", 70: "L"}
+        check("target map: positional mapping output->crop is built",
+              lambda: _assert(build_target_map(out_T, crop, cseq)
+                              == {226: 9, 227: 42, 228: 43, 229: 70}, "wrong map"))
+        check("target map: order-independent (input list unsorted)",
+              lambda: _assert(build_target_map(list(reversed(out_T)), crop, cseq)
+                              == {226: 9, 227: 42, 228: 43, 229: 70}, "wrong map"))
+        check("target map: residue-identity mismatch must RAISE",
+              lambda: build_target_map(out_T, crop, {9: "W", 42: "V", 43: "Y", 70: "L"}),
+              should_raise=True)
+        check("target map: length mismatch must RAISE",
+              lambda: build_target_map(out_T, [9, 42, 43], cseq), should_raise=True)
+        check("target map: missing crop sequence is tolerated (identity check skipped)",
+              lambda: _assert(build_target_map(out_T, crop, {})[226] == 9, "x"))
+
     print(f"\nself-test: {sum(ok)}/{len(ok)} passed")
     return all(ok)
 
@@ -336,6 +414,9 @@ def main():
     ap.add_argument("pdbs", nargs="*")
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--epitope", help="epitope JSON (uses residues_pdb + hotspots_pdb)")
+    ap.add_argument("--crop-manifest", help="target/crops/manifest.json")
+    ap.add_argument("--epitope-name", default="E1")
+    ap.add_argument("--numbering-map", help="target/numbering_map.json, for identity checks")
     ap.add_argument("--json-out")
     a = ap.parse_args()
 
@@ -348,10 +429,24 @@ def main():
         e = json.loads(Path(a.epitope).read_text())
         epi, hs = e["residues_pdb"], e["hotspots_pdb"]
 
+    crop_res = crop_seq = None
+    if a.crop_manifest:
+        man = json.loads(Path(a.crop_manifest).read_text())
+        crop_res = man[a.epitope_name]["residues_pdb"]
+        crop_seq = {}
+        if a.numbering_map:
+            nm = json.loads(Path(a.numbering_map).read_text())
+            full = nm["sequence_seqres"]
+            crop_seq = {p: full[p - 1] for p in crop_res}
+
     out = []
     for p in a.pdbs:
         try:
-            r = score_hlt(p, epitope_residues=epi, hotspots=hs)
+            tmap = None
+            if crop_res:
+                ch = tp.parse_pdb(p)
+                tmap = build_target_map(ch["T"], crop_res, crop_seq or {})
+            r = score_hlt(p, epitope_residues=epi, hotspots=hs, target_map=tmap)
         except PrepError as e:
             r = {"pdb": p, "error": str(e), "verdict": "ERROR"}
         out.append(r)
