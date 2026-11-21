@@ -36,56 +36,12 @@ echo "seqs/backbone $NSEQ   max backbones $MAXBB   temp $TEMP"
 echo "=============================================================="
 
 # ---- pick the backbones worth resampling, from round-1 RF2 metrics ----
-~/miniforge3/bin/conda run -n boltz python - "$SRC" "$SEL" "$MAXBB" <<'PY'
-import sys, re, json
-from pathlib import Path
-src, out, maxbb = Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])
-
-def scores(p):
-    d = {}
-    for line in p.read_text().splitlines():
-        if line.startswith("SCORE"):
-            try:
-                k, v = line[6:].split(":"); d[k.strip()] = float(v)
-            except ValueError:
-                pass
-    return d
-
-# A BACKBONE is good if ANY of its round-1 sequences folded well. We are resampling
-# geometry that works, so judge the geometry by its best sequence, not its mean.
-best = {}
-for p in sorted(src.glob("*/*/3_rf2/*.pdb")):
-    s = scores(p)
-    if "interaction_pae" not in s:
-        continue
-    arm = next((x for x in ("E1","E2","E3") for pt in p.parts if pt == x), None)
-    # backbone id = everything before the _dldesign_N suffix
-    m = re.match(r"(.+?)_dldesign_\d+_best$", p.stem)
-    if not m:
-        continue
-    bb = m.group(1)
-    batch = p.parts[-3]
-    key = (arm, batch, bb)
-    cur = best.get(key)
-    if cur is None or s["interaction_pae"] < cur["ipae"]:
-        best[key] = {"ipae": s["interaction_pae"],
-                     "rmsd": s.get("target_aligned_antibody_rmsd", 999.0),
-                     "plddt": s.get("pred_lddt", 0.0)}
-
-rows = [(k, v) for k, v in best.items() if v["ipae"] < 10.0]
-rows.sort(key=lambda kv: (kv[1]["ipae"], kv[1]["rmsd"]))
-rows = rows[:maxbb]
-
-with open(out, "w") as w:
-    w.write("arm\tbatch\tbackbone\tbest_ipae\tbest_rmsd\tplddt\n")
-    for (arm, batch, bb), v in rows:
-        w.write(f"{arm}\t{batch}\t{bb}\t{v['ipae']:.2f}\t{v['rmsd']:.2f}\t{v['plddt']:.3f}\n")
-
-print(f"[select] {len(best)} backbones scored, {sum(1 for _,v in best.items() if v['ipae']<10)} "
-      f"with interaction_pae < 10, taking top {len(rows)}")
-for (arm, batch, bb), v in rows[:10]:
-    print(f"         {arm} {batch} {bb}  ipae={v['ipae']:.2f} rmsd={v['rmsd']:.2f}")
-PY
+# NOTE: this used to be an inline heredoc piped to `conda run`. It silently did nothing,
+# because conda run does not reliably forward stdin. Now a real file, and the exit
+# status is checked.
+~/miniforge3/bin/conda run -n boltz python "$REPO/scripts/select_backbones.py" \
+  "$SRC" "$SEL" "$MAXBB" || { echo "FATAL: backbone selection failed"; exit 1; }
+[ -s "$SEL" ] || { echo "FATAL: $SEL was not written"; exit 1; }
 
 N=$(( $(wc -l < "$SEL") - 1 ))
 if [ "$N" -le 0 ]; then

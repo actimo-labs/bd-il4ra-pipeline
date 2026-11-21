@@ -1154,3 +1154,73 @@ transfer CDR spans with `transfer_cdrs`, write HLT, and run `11_run_production.s
 the new framework. Roughly 3–4 GPU-h. `sprint.yaml` still lists the germline framework
 with `hlt_pdb: null` — it is **not** written off, just not built tonight.
 
+
+---
+
+## 2026-11-21 13:36–13:39 UTC — Test-ran the resample stage. **It was a silent no-op.**
+Gate: G2  |  Rung: F0  |  T-63.3h
+
+`12_deep_resample.sh` had never been executed. It was scheduled to fire unattended at
+~21:30 UTC with nobody watching, so I ran it against the current partial pool first
+(1 backbone × 4 sequences, ~2 minutes of GPU alongside production).
+
+**It did nothing, and reported success-shaped output while doing it:**
+
+```
+scripts/12_deep_resample.sh: line 90: .../selected_backbones.tsv: No such file or directory
+No backbones passed interaction_pae < 10. Nothing to resample.
+```
+
+**Cause: `conda run` does not reliably forward a heredoc on stdin.** The backbone-selection
+step was an inline `conda run -n boltz python - <<'PY'`. The interpreter received no
+program, printed nothing, exited 0, and wrote no file — after which the script read the
+missing file, concluded zero backbones qualified, and exited cleanly.
+
+That message is indistinguishable from the legitimate case where no backbone is good
+enough. **The entire deep-resample round would have been lost overnight and the log would
+have said the pool simply wasn't good enough.**
+
+Fixed by extracting the logic to `scripts/select_backbones.py` — a real file, invoked
+normally — and by checking both the exit status and that the output file is non-empty:
+
+```bash
+conda run -n boltz python "$REPO/scripts/select_backbones.py" "$SRC" "$SEL" "$MAXBB" \
+  || { echo "FATAL: backbone selection failed"; exit 1; }
+[ -s "$SEL" ] || { echo "FATAL: $SEL was not written"; exit 1; }
+```
+
+Re-ran, and it works:
+
+```
+[select] scanned 20 RF2 PDBs -> 10 distinct backbones
+[select] 3 backbones have a sequence with interaction_pae < 10.0; taking top 1
+         E1 b000 E1_b000_3  ipae=8.03 rmsd=6.71
+[13:38:34] E1/b000/E1_b000_3  mpnn=4 clean=1 folded=1  (saved 81s of RF2)
+```
+
+**The prefilter earns its place immediately**: 3 of 4 fresh MPNN draws carried a CDR
+sequon and were discarded for 6 s of MPNN each rather than 27 s of RF2 each.
+
+### Two things this changes
+
+1. **Backbone yield**: 3 of 10 round-1 backbones have at least one sequence under
+   `interaction_pae < 10`. Judging a backbone by its **best** sequence (not its mean) is
+   the right call — we are resampling geometry, and one good sequence is evidence the
+   geometry can carry one. Extrapolating 30% over 230 backbones gives ~69 resample
+   candidates. (n=10. Not a rate.)
+2. **Resample is cheaper than budgeted.** At ~30% clean after prefiltering:
+   `16 seqs x 1.5 s + ~5 x 24 s = ~144 s/backbone`. For 80 backbones that is
+   **~3.2 GPU-h**. Chain retuned from `12 seqs x 60 backbones` to **`16 x 80`** to use
+   the surplus, overridable via `RESAMPLE_NSEQ` / `RESAMPLE_MAXBB`.
+
+The smoke-test output was **moved aside, not deleted**
+(`out/resample/_smoketest_b000_E1_b000_3`) so that the best backbone found so far gets
+the full 16 draws in the real run instead of being skipped as already-done.
+
+### Note on sequon rate vs temperature
+
+Round 1 at `--temperature 0.2` gave 55% sequon-free. This resample draw at `0.25` gave
+1 of 4. **n=4 — far too small to attribute to temperature**, and it is equally consistent
+with noise. Flagged only so that if the resample round comes back with a much lower clean
+fraction than round 1, temperature is the first thing to check. Not changing it on n=4.
+

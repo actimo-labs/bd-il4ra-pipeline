@@ -41,7 +41,7 @@ FREE=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
 
 # ---- 2. deep resample ---------------------------------------------------
 say "--- STAGE: deep resample ---"
-bash "$REPO/scripts/12_deep_resample.sh" 12 60 2>&1 | tee -a "$LOG"
+bash "$REPO/scripts/12_deep_resample.sh" "${RESAMPLE_NSEQ:-16}" "${RESAMPLE_MAXBB:-80}" 2>&1 | tee -a "$LOG"
 say "resample designs: $(ls "$BDIL4R"/out/resample/*/*/4_rf2/*.pdb 2>/dev/null | wc -l)"
 
 # ---- 3. harvest everything ---------------------------------------------
