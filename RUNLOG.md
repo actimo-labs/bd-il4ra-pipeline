@@ -1561,3 +1561,30 @@ for 20 designs; the remainder is interface SASA, not novelty).
 
 Regression gate: **16/16 modules clean**, 05_novelty now 26/26.
 
+
+### Same denominator defect found in the CLUSTERING function, pre-emptively
+
+Having fixed it in novelty, I checked the other place identity is computed —
+`08_rank_select._identity`, which drives CDR-H3 clustering — and it had the same defect:
+
+```
+_identity('AAAAAAAAAA', 'AAAAA') == 1.0      # a 5-mer "is" a 10-mer
+```
+
+Consequence would have been the opposite of the novelty one but equally damaging: short
+H3s **merging** with longer H3s that contain them, collapsing genuinely different loops
+into one cluster. Our H3s span 7–13 residues by design (`H3:5-13`), so those length
+differences are real, and over-merging shrinks apparent diversity precisely where the
+≤3-per-cluster cap then bites — which could leave us unable to fill 20 slots from a pool
+that actually had the diversity.
+
+Fixed to divide by the longer sequence, with two tests added. No effect on the current
+3-candidate pool; it matters at full scale.
+
+Regression gate **16/16 clean**; `08_rank_select` now 29/29.
+
+**Three instances of one defect class in one evening** (novelty identity, degenerate
+reference CDRs, clustering identity). The common root is a percent-identity denominator
+chosen without asking what a length *mismatch* should mean. Worth stating because the
+fourth instance, if there is one, will look the same.
+

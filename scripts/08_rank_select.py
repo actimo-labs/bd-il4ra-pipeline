@@ -62,20 +62,28 @@ def num(v, default=None):
 # ---------------------------------------------------------------- identity
 
 def _identity(a, b):
-    """Percent identity over the shorter sequence, ungapped sliding comparison.
+    """Ungapped best-offset identity, divided by the LONGER sequence.
 
-    Deliberately simple: CDR-H3 clustering only needs a similarity ordering, and a
-    full affine-gap alignment per pair is O(n*m) on thousands of pairs.
+    The denominator matters. Dividing by the shorter sequence (as this did originally)
+    scores a 5-mer as 1.000 identical to any 10-mer containing it, which silently
+    MERGES genuinely different CDR-H3 loops into one cluster. Our H3s span 7-13
+    residues by design (`H3:5-13`), so length differences are real differences, and
+    over-merging shrinks apparent diversity exactly where the <=3-per-cluster cap then
+    bites. Same defect class as the novelty identity bug -- see RUNLOG 2026-11-21.
+
+    Deliberately ungapped: clustering needs a similarity ordering, not an alignment,
+    and a full affine-gap NW per pair is O(n*m) over thousands of pairs.
     """
     if not a or not b:
         return 0.0
+    d = max(len(a), len(b))
     if len(a) > len(b):
         a, b = b, a
     best = 0
     for off in range(len(b) - len(a) + 1):
         m = sum(1 for x, y in zip(a, b[off:off + len(a)]) if x == y)
         best = max(best, m)
-    return best / len(a)
+    return best / d
 
 
 def cluster_by_identity(items, key, cut=CLUSTER_CUT):
@@ -344,6 +352,11 @@ def self_test():
     check("identity: disjoint -> 0.0", _identity("AAAA", "WWWW") == 0.0)
     check("identity: 1 of 7 differs -> ~0.857",
           abs(_identity("ABCDEFG", "ABCDEFW") - 6 / 7) < 1e-9)
+    check("identity: a 5-mer inside a 10-mer is NOT 1.0 (would over-merge clusters)",
+          _identity("AAAAAAAAAA", "AAAAA") == 0.5)
+    check("identity: different-length H3s do not collapse into one cluster",
+          cluster_by_identity(["WGYAMDY", "WGYAMDYQKLRPT"], lambda x: x, 0.70)[0]
+          != cluster_by_identity(["WGYAMDY", "WGYAMDYQKLRPT"], lambda x: x, 0.70)[1])
 
     items = ["WGYAMDY", "WGYAMDW", "QQQQQQQ", "QQQQQQR"]
     cl = cluster_by_identity(items, lambda x: x, 0.70)
