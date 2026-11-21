@@ -965,3 +965,74 @@ Round 1 should therefore finish about **21:30 UTC Sat (08:30 AEDT Sun)** — rou
 the user wakes — and frees **~5.6 GPU-h** against the original plan. Per `PIPELINE.md` §3
 rule 2 that surplus goes to **deep resampling**, not to more backbones.
 
+
+---
+
+## 2026-11-21 13:24–13:30 UTC — Boltz-2 cross-check working. Chain-pair trap confirmed from a second model family.
+Gate: G2  |  Rung: F0  |  T-63.5h
+
+`scripts/09_boltz_crosscheck.py`, 11/11 self-test, then a real timed run.
+
+Boltz-2 is installed and healthy: weights at `~/.boltz/boltz2_{conf,aff}.ckpt`,
+torch 2.14.1+cu126, `cuda_available True`. `msa: empty` on all three chains — the MSA
+server at `10.148.0.19:8080` is dead and was not contacted.
+
+### **MEASURED: 120.6 s per complex at 5 diffusion samples** (Fv 225 aa + ECD 207 aa)
+
+Budget: cross-checking ~100 survivors costs **~3.35 GPU-h**. Affordable, and it stays a
+second opinion applied to filtered survivors rather than the whole pool.
+
+### The chain-pair trap, now demonstrated independently by Boltz-2
+
+Five diffusion samples on the one pilot design that passed eligibility:
+
+```
+(H+L) vs T   mean 0.531   sd 0.137   range 0.389 - 0.760    <- the real signal
+H<->L        mean 0.969   sd 0.001   range 0.968 - 0.971    <- NEGATIVE CONTROL
+global ipTM  mean 0.676              range 0.600 - 0.806    <- contaminated, unusable
+```
+
+**The H↔L interface scores 0.969 with a standard deviation of 0.001.** It is essentially
+a constant. Global ipTM (0.676) looks like a respectable complex; the actual
+antigen-binding interface is **0.531** and rank-ordering on the global value would be
+rank-ordering on noise plus a constant.
+
+This is the same trap RF2 showed earlier, now reproduced in a completely different model
+family. `parse_confidence()` **raises** rather than falling back to global ipTM if
+`pair_chains_iptm` is ever absent, and the global value is stored under the key
+`global_iptm_DO_NOT_RANK_ON_THIS` so it cannot be picked up by accident.
+
+### Multi-sample averaging is not optional — local evidence
+
+The **spread across 5 samples on the real metric was 0.371** (0.389 → 0.760) for a single
+design. A one-sample Boltz score here would be close to meaningless. `PIPELINE.md` §3
+rule 1 (ρ = +0.239 at 1 sample vs +0.846 at 5) is confirmed on our own system, and the
+5-sample mean and **sd** are both carried into the manifest so a design with a wild
+spread can be recognised as weak even when its mean looks good.
+
+Note the contrast in stability: the negative control has sd 0.001 while the informative
+metric has sd 0.137. The uninformative number is the stable one — which is exactly why
+it is seductive.
+
+### Production batch 0 complete — full measured cost
+
+```
+2026-11-21T13:17:15Z  E1 b000  rfdiffusion   10 backbones   807 s   80.7 s/backbone
+2026-11-21T13:17:45Z  E1 b000  proteinmpnn   20 sequences    30 s    1.50 s/sequence
+2026-11-21T13:25:46Z  E1 b000  rf2           20 designs     481 s   24.1 s/design
+                                             batch total   1318 s  131.8 s/backbone
+```
+
+131.8 s/backbone matches the re-sizing estimate exactly. **230 backbones = 8.42 GPU-h**,
+finishing ~21:28 UTC Sat (08:28 AEDT Sun).
+
+Revised plan for the remaining GPU budget:
+
+```
+round 1 generation      8.4 h   running, ends ~21:28 UTC
+deep resample           ~4 h    after round 1; pre-RF2 sequon filter
+Boltz-2 cross-check     ~3.3 h  ~100 survivors at 120.6 s each
+                        -------
+                        ~15.7 h  comfortably inside the 20-28 h envelope
+```
+
