@@ -42,6 +42,17 @@ MAX_INTERACTION_PAE = 10.0
 MAX_FRAMEWORK_CDR_RMSD = 2.0
 MIN_BSA = 400.0
 
+# [ASSUMPTION] Fraction of the (H+L) vs T interface allowed to sit on glycan-masked or
+# membrane-proximal target surface. The glycan mask filters epitope SELECTION, but masked
+# residues stay in the crop and designs demonstrably drift onto them (measured on 55 real
+# designs: median 0.24, p75 0.37, max 0.62). Designs above ~0.50 engaged almost no
+# hotspots (0.20/4 vs 1.62/4 below 0.15).
+#
+# Set PERMISSIVELY at 0.40 on purpose: the mask is itself a 10 A modelling assumption,
+# not a measurement, and stacking a tight cliff on top of an assumption throws away real
+# designs. Above the gate it is a hard reject; below it, it is a ranked penalty.
+MAX_MASKED_CONTACT_FRAC = 0.40
+
 # diversity, RANKING_AND_QC.md section 6
 CLUSTER_CUT = 0.70
 MAX_PER_CLUSTER = 3
@@ -152,6 +163,10 @@ def passes_hard_filter(r):
     bsa = num(r.get("bsa_a2"))
     if bsa is not None and bsa < MIN_BSA:
         return False, f"bsa {bsa:.0f} < {MIN_BSA}"
+    mf = num(r.get("masked_contact_frac"))
+    if mf is not None and mf > MAX_MASKED_CONTACT_FRAC:
+        return False, (f"masked_contact_frac {mf:.2f} > {MAX_MASKED_CONTACT_FRAC} "
+                       f"-- too much of the interface is on presumed-glycosylated surface")
     return True, ""
 
 
@@ -164,6 +179,7 @@ def score_rows(rows):
     geom_bsa = rank_within_family(rows, "bsa_a2", lower_is_better=False)
     geom_epi = rank_within_family(rows, "epitope_contact_frac", lower_is_better=False)
     liab = rank_within_family(rows, "liability_penalty", lower_is_better=True)
+    maskf = rank_within_family(rows, "masked_contact_frac", lower_is_better=True)
     novel = rank_within_family(rows, "nearest_ref_cdrh3_identity", lower_is_better=True)
 
     # within-family composites, then a weighted sum of RANKS (not of raw values)
@@ -178,7 +194,7 @@ def score_rows(rows):
             parts.append(sum(rf2_sub) / len(rf2_sub)); wts.append(W["rf2"])
         if boltz[c] is not None:
             parts.append(boltz[c]); wts.append(W["boltz2"])
-        g = [x for x in (geom_bsa[c], geom_epi[c]) if x is not None]
+        g = [x for x in (geom_bsa[c], geom_epi[c], maskf[c]) if x is not None]
         if g:
             parts.append(sum(g) / len(g)); wts.append(W["geometry"])
         if liab[c] is not None:
@@ -388,6 +404,12 @@ def self_test():
           not passes_hard_filter(dict(base, rf2_iface_hl_vs_t=NOT_RUN))[0])
     check("filter: tiny BSA is rejected",
           not passes_hard_filter(dict(base, bsa_a2="100"))[0])
+    check("filter: interface mostly on glycan-masked surface is rejected",
+          not passes_hard_filter(dict(base, masked_contact_frac="0.62"))[0])
+    check("filter: modest masked fraction still passes (permissive by design)",
+          passes_hard_filter(dict(base, masked_contact_frac="0.24"))[0])
+    check("filter: not_run masked fraction does not reject (metric may be absent)",
+          passes_hard_filter(dict(base, masked_contact_frac=NOT_RUN))[0])
 
     # selection behaviour
     def mk(i, arm, h3, pae, pen=1.0):

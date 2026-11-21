@@ -129,7 +129,7 @@ def build_target_map(target_chain, crop_residues, crop_seq_by_resnum):
 
 
 def score_hlt(path, epitope_residues=None, hotspots=None, strict=True,
-              target_map=None):
+              target_map=None, masked_residues=None):
     """Score one HLT complex. Returns a dict. Asserts the H/L/T chain selection.
 
     epitope_residues / hotspots: target (chain T) residue numbers, post-crop numbering.
@@ -210,6 +210,25 @@ def score_hlt(path, epitope_residues=None, hotspots=None, strict=True,
             "on_epitope_frac_of_all_contacts":
                 round(len(inter) / len(contacted), 3) if contacted else 0.0,
         }
+    # ---- how much of the interface sits on presumed-glycosylated surface? ----
+    # The glycan mask filters EPITOPE SELECTION, but masked residues remain physically
+    # present in the crop, so nothing stops a design from docking onto them. Measured
+    # on real output: 33-43% of each crop is masked surface and designs drift onto it
+    # (E2 median 35% of contacts). A design burying a third of its paratope under an
+    # assumed glycan will model beautifully and give zero assay signal.
+    if masked_residues:
+        mset = set(masked_residues)
+        on_masked = sorted(contacted & mset)
+        res["masked_surface"] = {
+            "n_contacts_on_masked": len(on_masked),
+            "contacts_on_masked": on_masked,
+            "masked_contact_frac": round(len(on_masked) / len(contacted), 3)
+                                   if contacted else 0.0,
+            "note": "fraction of (H+L) vs T residue contacts falling on glycan-masked "
+                    "or membrane-proximal target surface. [ASSUMPTION] the mask itself "
+                    "is a 10 A shell around sequon Asn, not a certainty of occlusion.",
+        }
+
     if hotspots:
         # RFantibody's own hotspot definition: mean Cbeta distance to the closest 5
         # binder CDR residues < 8 A. We use the simpler "is it contacted" plus Cbeta.
@@ -368,6 +387,16 @@ def self_test():
             _assert(r["hotspots"]["n_hotspots"] == 2, "hotspot count wrong")
         check("epitope and hotspot accounting runs and is in range", epi)
 
+        def maskfrac():
+            r = score_hlt(bound, epitope_residues=[1, 2, 3], hotspots=[1, 2],
+                          masked_residues=[1, 2, 3, 4, 5])
+            _assert(r["masked_surface"]["masked_contact_frac"] == 1.0,
+                    "all-masked target should give frac 1.0")
+            r2 = score_hlt(bound, epitope_residues=[1, 2, 3], hotspots=[1, 2],
+                           masked_residues=[])
+            _assert("masked_surface" not in r2, "empty mask should not add the key")
+        check("masked-surface accounting: all-masked target gives frac 1.0", maskfrac)
+
         # BSA sanity: burying surface must be positive when in contact, ~0 when apart
         check("BSA > 0 for the bound complex",
               lambda: _assert(score_hlt(bound)["HL_vs_T"]["bsa_a2"] > 0, "zero"))
@@ -417,6 +446,7 @@ def main():
     ap.add_argument("--crop-manifest", help="target/crops/manifest.json")
     ap.add_argument("--epitope-name", default="E1")
     ap.add_argument("--numbering-map", help="target/numbering_map.json, for identity checks")
+    ap.add_argument("--glycan-mask", help="target/glycan_mask.json")
     ap.add_argument("--json-out")
     a = ap.parse_args()
 
@@ -439,6 +469,11 @@ def main():
             full = nm["sequence_seqres"]
             crop_seq = {p: full[p - 1] for p in crop_res}
 
+    masked = None
+    if a.glycan_mask:
+        g = json.loads(Path(a.glycan_mask).read_text())
+        masked = set(g["masked_pdb"]) | set(g.get("membrane_proximal_pdb", []))
+
     out = []
     for p in a.pdbs:
         try:
@@ -446,7 +481,8 @@ def main():
             if crop_res:
                 ch = tp.parse_pdb(p)
                 tmap = build_target_map(ch["T"], crop_res, crop_seq or {})
-            r = score_hlt(p, epitope_residues=epi, hotspots=hs, target_map=tmap)
+            r = score_hlt(p, epitope_residues=epi, hotspots=hs, target_map=tmap,
+                          masked_residues=masked)
         except PrepError as e:
             r = {"pdb": p, "error": str(e), "verdict": "ERROR"}
         out.append(r)

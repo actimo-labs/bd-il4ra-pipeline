@@ -63,7 +63,7 @@ COLUMNS = [
     # extra provenance columns beyond the spec's minimum, all measured
     "rf2_plddt", "rf2_target_aligned_antibody_rmsd", "rf2_framework_aligned_cdr_rmsd",
     "rf2_framework_aligned_H3_rmsd", "hotspots_engaged", "n_hotspots", "verdict",
-    "hl_vs_l_bsa_negative_control",
+    "hl_vs_l_bsa_negative_control", "masked_contact_frac", "n_contacts_on_masked",
 ]
 
 
@@ -148,6 +148,11 @@ def harvest(limit=None, verbose=True, root=None, pattern="*/*/3_rf2/*.pdb"):
         log("[warn] no frozen reference set; novelty columns will be not_run")
 
     crops = json.loads((TARGET / "crops" / "manifest.json").read_text())
+    gmp = TARGET / "glycan_mask.json"
+    masked = None
+    if gmp.exists():
+        g = json.loads(gmp.read_text())
+        masked = set(g["masked_pdb"]) | set(g.get("membrane_proximal_pdb", []))
     nm = json.loads((TARGET / "numbering_map.json").read_text())
     full_seq = nm["sequence_seqres"]
     epitopes = {}
@@ -199,7 +204,7 @@ def harvest(limit=None, verbose=True, root=None, pattern="*/*/3_rf2/*.pdb"):
                 chn["T"], crop_res, {q: full_seq[q - 1] for q in crop_res})
             im = iface.score_hlt(p, epitope_residues=epi["residues_pdb"] if epi else None,
                                  hotspots=epi["hotspots_pdb"] if epi else None,
-                                 target_map=tmap)
+                                 target_map=tmap, masked_residues=masked)
         except Exception as e:
             log(f"  [warn] {cid}: interface scoring failed: {e}")
             im = None
@@ -270,6 +275,10 @@ def harvest(limit=None, verbose=True, root=None, pattern="*/*/3_rf2/*.pdb"):
                 "verdict": im["verdict"],
                 "hl_vs_l_bsa_negative_control":
                     im.get("H_vs_L_NEGATIVE_CONTROL", {}).get("bsa_a2", NOT_RUN),
+                "masked_contact_frac":
+                    im.get("masked_surface", {}).get("masked_contact_frac", NOT_RUN),
+                "n_contacts_on_masked":
+                    im.get("masked_surface", {}).get("n_contacts_on_masked", NOT_RUN),
             })
         rows.append(row)
         if verbose and i % 25 == 0:
