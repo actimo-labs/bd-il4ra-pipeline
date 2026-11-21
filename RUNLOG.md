@@ -466,3 +466,69 @@ residue count.
 The `chothia2HLT.py` converter was not needed. Note the README calls it
 `chothia_to_HLT.py`; the actual filename is `chothia2HLT.py`.
 
+
+---
+
+## 2026-11-21 13:20–14:05 UTC — Interface scorer + a real SASA bug found and fixed
+Gate: G1  |  Rung: F0  |  T-63.0h
+
+`scripts/04_interface.py` written — **(H+L) vs T** interface scoring. 17/17 self-test.
+
+### A genuine bug, found because an invariant was asserted rather than eyeballed
+
+The first self-test run produced a **negative buried surface area (−221 Å²)** on a
+synthetic complex. BSA = SASA(A) + SASA(B) − SASA(AB); adding chains can only *reduce*
+total SASA, so a negative BSA is physically impossible and meant the SASA itself was wrong.
+
+Narrowed it down with a controlled experiment:
+
+```
+2 chains (40 atoms), resnums 1-5 in both :  601.33   <- H and L occlude each other
+3 chains (60 atoms), resnums 1-5 in all  :  822.53   <- occlusion GONE
+3 chains (60 atoms), UNIQUE resnums      :  616.46   <- occlusion back
+```
+
+Constant +221.20 Å² error regardless of how far away the third chain was (tested to
+1000 Å), so it was not geometric. **The cause is duplicate residue IDs across chains in
+the Bio.PDB entity tree I was constructing** — my wrapper's fault, not a biopython defect.
+It matters here because **an Fv-antigen complex always has duplicated residue numbers**
+(H1.., L1.., T1..), so this would have silently corrupted every BSA in the campaign.
+
+**Fix: replaced the biopython wrapper with an in-house Shrake-Rupley** (numpy, 256-point
+golden-spiral sphere, standard vdW radii + 1.4 Å probe) in `01_target_prep.py`, now shared
+by `04_interface.py`. Self-contained, no entity tree, no ID semantics to get wrong.
+
+**Validated against biopython on the single-chain case, where biopython is correct:**
+
+```
+n residues compared : 188
+total SASA   mine = 10939.6   biopython = 10967.0   ratio 0.9975
+pearson r           0.99812
+mean abs diff       2.07 A^2   (max 11.14)
+```
+
+Added two regression guards to the self-test: BSA is never negative, and BSA is unaffected
+by residue numbers duplicated across chains.
+
+**Impact on earlier work: none material.** `01_target_prep.py` built a *single* chain with
+unique resnums — the well-behaved case — so the hotspot SASA values were already sound.
+Re-ran everything against the in-house SASA to confirm:
+
+- **E1 unchanged**: same 13 residues, same hotspots **D92, V94, D150, Y152**. Y38 is still
+  correctly rejected as buried (5.2 Å² under the new code vs 7.6 Å² under biopython).
+- **E3 unchanged**: seed L139, hotspots L140, R185, A187, A188.
+- **E2 shifted**: seed R59 → **L109**, hotspots now **L61, W104, L109, L110** (was L61,
+  I75, W104, L109). Small SASA differences moved the patch ranking. The new patch is
+  11 residues / 882 Å² / 5 hydrophobic. `sprint.yaml` and the E2 crop updated.
+- **E1 crop is byte-identical (md5 `6223403a…`), so the pilot already running against it
+  remains valid** and did not need restarting.
+
+### Why this module reports the H↔L interface at all
+
+It is emitted as `H_vs_L_NEGATIVE_CONTROL`, with a warning string attached. The self-test
+asserts that **H↔L is numerically identical between a bound and an unbound complex while
+(H+L) vs T differs** — that is the trap from `CLAUDE.md` §6 trap 3 demonstrated
+executably, rather than just written down. `score_hlt()` also hard-asserts the chain set
+is exactly {H, L, T} and refuses to score a complex with a missing light chain in strict
+mode, because that would silently turn an Fv score into a VHH score.
+

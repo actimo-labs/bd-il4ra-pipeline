@@ -44,10 +44,10 @@ epitopes:
   E2:
     description: "Best-scoring alternate surface patch"
     slot_target: 5
-    residues_pdb: [34, 36, 46, 47, 48, 50, 77, 79, 81, 82, 83, 84, 85]
-    residues_labelled: ['R59', 'L61', 'A71', 'H72', 'T73', 'I75', 'D102', 'W104', 'G106', 'Q107', 'Q108', 'L109', 'L110']   # UniProt numbering
-    hotspots_pdb: [36, 50, 79, 84]             # post-crop renumbering applied at S1b
-    hotspots_labelled: ['L61', 'I75', 'W104', 'L109']
+    residues_pdb: [34, 36, 77, 79, 81, 82, 83, 84, 85, 86, 87]
+    residues_labelled: ['R59', 'L61', 'D102', 'W104', 'G106', 'Q107', 'Q108', 'L109', 'L110', 'W111', 'K112']   # UniProt numbering
+    hotspots_pdb: [36, 79, 84, 85]             # post-crop renumbering applied at S1b
+    hotspots_labelled: ['L61', 'W104', 'L109', 'L110']
     frozen: true
   E3:
     description: "Second-best alternate surface patch"

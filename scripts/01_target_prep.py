@@ -230,28 +230,85 @@ def cbeta_mask(anchor_res, all_res, radius):
     return masked
 
 
-def sasa_per_residue(residues):
-    """Shrake-Rupley SASA per residue via biopython, on the isolated (unbound) chain."""
-    from Bio.PDB.SASA import ShrakeRupley
-    from Bio.PDB.Atom import Atom
-    from Bio.PDB.Residue import Residue as BioRes
-    from Bio.PDB.Chain import Chain
-    from Bio.PDB.Model import Model
-    from Bio.PDB.Structure import Structure
+# van der Waals radii, A. Same source biopython's ShrakeRupley uses (Wikipedia
+# atomic-radii data page), restricted to the elements that occur in protein PDBs.
+VDW = {"C": 1.70, "N": 1.55, "O": 1.52, "S": 1.80, "H": 1.20, "P": 1.80,
+       "SE": 1.90, "F": 1.47, "CL": 1.75, "BR": 1.85, "I": 1.98}
+PROBE = 1.40
+N_SPHERE = 256
 
-    st = Structure("s")
-    mo = Model(0)
-    ch = Chain("B")
-    st.add(mo)
-    mo.add(ch)
-    for i, r in enumerate(residues):
-        br = BioRes((" ", r.resnum, " "), r.resname, "")
+
+def _element_of(atom_name):
+    n = atom_name.strip()
+    if n[:2].upper() in ("SE", "CL", "BR"):
+        return n[:2].upper()
+    return n[0].upper()
+
+
+def _golden_sphere(n=N_SPHERE):
+    """Evenly distributed points on the unit sphere (golden spiral)."""
+    k = np.arange(n, dtype=np.float64)
+    z = 1.0 - (2.0 * k + 1.0) / n
+    r = np.sqrt(np.clip(1.0 - z * z, 0.0, None))
+    phi = k * np.pi * (3.0 - np.sqrt(5.0))
+    return np.stack([np.cos(phi) * r, np.sin(phi) * r, z], axis=1)
+
+
+_SPHERE = _golden_sphere()
+
+
+def sasa_per_residue(residues, n_points=N_SPHERE):
+    """Shrake-Rupley SASA per residue, numpy, self-contained.
+
+    Written in-house deliberately. The biopython wrapper this replaced returned
+    inconsistent values when residue numbers were duplicated across chains (an Fv+target
+    complex has H1.., L1.., T1..), producing a NEGATIVE buried-surface-area -- which is
+    physically impossible and is what exposed the problem. Validated against
+    Bio.PDB.SASA on a single clean chain in the self-test.
+
+    `residues` may span several chains; occlusion is computed over all of them jointly,
+    which is exactly what a BSA calculation needs.
+    """
+    coords, radii, owner = [], [], []
+    for r in residues:
         for name, xyz in r.atoms.items():
-            el = name[0]
-            br.add(Atom(name, xyz, 0.0, 1.0, " ", name, i, element=el))
-        ch.add(br)
-    ShrakeRupley().compute(st, level="R")
-    return {r.resnum: ch[(" ", r.resnum, " ")].sasa for r in residues}
+            el = _element_of(name)
+            if el == "H":
+                continue
+            coords.append(xyz)
+            radii.append(VDW.get(el, 1.70) + PROBE)
+            owner.append((r.chain, r.resnum))
+    if not coords:
+        return {}
+    coords = np.asarray(coords, dtype=np.float64)
+    radii = np.asarray(radii, dtype=np.float64)
+    n = len(coords)
+    sphere = _SPHERE if n_points == N_SPHERE else _golden_sphere(n_points)
+    npts = len(sphere)
+
+    # neighbour shortlist: two atoms can only occlude if closer than r_i + r_j
+    d = np.linalg.norm(coords[:, None, :] - coords[None, :, :], axis=-1)
+    cutoff = radii[:, None] + radii[None, :]
+    neigh = (d < cutoff) & ~np.eye(n, dtype=bool)
+
+    out = {}
+    for i in range(n):
+        js = np.flatnonzero(neigh[i])
+        pts = sphere * radii[i] + coords[i]
+        if js.size:
+            dd = np.linalg.norm(pts[:, None, :] - coords[js][None, :, :], axis=-1)
+            buried = (dd < radii[js][None, :]).any(axis=1)
+            acc = int((~buried).sum())
+        else:
+            acc = npts
+        area = 4.0 * np.pi * radii[i] ** 2 * acc / npts
+        out[owner[i]] = out.get(owner[i], 0.0) + area
+
+    # callers that passed a single chain expect resnum keys
+    chains = {c for c, _ in out}
+    if len(chains) == 1:
+        return {rn: v for (_, rn), v in out.items()}
+    return out
 
 
 # ---------------------------------------------------------------- main prep
