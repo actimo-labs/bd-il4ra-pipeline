@@ -229,3 +229,69 @@ scripts/proteinmpnn_interface_design.py:45: ... '/home/weights/ProteinMPNN_v48_n
 Both are Docker-internal paths that do not exist in a `uv` local install. Third trap
 (`model_runners.py` checkpoint default) still to be checked. Patching next.
 
+
+### Step 4 — weight-path patches applied. All three traps resolved.
+
+**Finding that changes the risk picture: at commit `efe4b90` the CLI entry points already
+inject the correct weights path, so the two documented "known-bad path" traps cannot fire
+when the pipeline is driven through `rfdiffusion` / `proteinmpnn` / `rf2`.**
+`src/rfantibody/cli/inference.py` calls `PathConfig.get_weight_path(<model>)` and appends
+an explicit override (lines 134, 276, 425). `PathConfig.WEIGHTS_DIR` defaults to
+`PROJECT_ROOT/weights`, which is exactly where ours live, so resolution is correct:
+
+```
+rfdiffusion  .../weights/RFdiffusion_Ab.pt             exists=True  size=483452922
+proteinmpnn  .../weights/ProteinMPNN_v48_noise_0.2.pt  exists=True  size=6681301
+rf2          .../weights/RF2_ab.pt                     exists=True  size=294759918
+```
+
+All three sizes match the `content-length` from the Step 0 HEAD probe exactly — downloads
+are complete and not truncated.
+
+**But the injection is conditional on `default_weights.exists()`, with a silent fallthrough
+to the Docker path if it is false.** That is a latent silent-failure mode, so the patches
+were applied anyway as belt-and-braces:
+
+```diff
+--- a/src/rfantibody/rf2/config/base.yaml
+-  model_weights: /home/weights/RF2_ab.pt
++  model_weights: /mnt/comp5data/bd-il4r/rfantibody/weights/RF2_ab.pt
+
+--- a/scripts/proteinmpnn_interface_design.py
+-default_ckpt = os.path.join( os.path.dirname(__file__), '/home/weights/ProteinMPNN_v48_noise_0.2.pt')
++default_ckpt = '/mnt/comp5data/bd-il4r/rfantibody/weights/ProteinMPNN_v48_noise_0.2.pt'
+```
+
+(The original mpnn line was doubly broken: `os.path.join` with an absolute second argument
+discards the first, so `os.path.dirname(__file__)` was dead code.)
+
+**Trap 3 confirmed real and handled differently.** `model_runners.py:70-81` falls back to
+IPD-internal paths (`/net/databases/diffusion/models/hotspot_models/base_complex_finetuned_BFF_9.pt`
+et al.) when `inference.ckpt_override_path` is None. Per the runbook's preferred option we
+will **always pass the checkpoint explicitly** rather than edit the file. `model_runners.py:196`
+prints the resolved `ckpt_path` at load time — the pilot log will be checked for it.
+
+`--no-trajectory` confirmed as the real flag name against `rfdiffusion --help`
+(maps to `inference.write_trajectory=False`). Trajectory output will be off in every run.
+
+### Doc/code mismatch, non-blocking
+README says the HLT converter is `scripts/util/chothia_to_HLT.py`; the file on disk is
+`scripts/util/chothia2HLT.py`. Not on our critical path — the hu-4D5-8 framework ships
+pre-converted at `scripts/examples/example_inputs/hu-4D5-8_Fv.pdb`.
+
+### Upstream guidance captured from README (drives G2 sizing and the filter)
+- **Authors' minimal filter: RF2 pAE < 10, and RMSD(design vs RF2 prediction) < 2 Å.**
+  Rosetta ddG < -20 optional (Rosetta not installed; skip).
+- Authors state the filter is the pipeline's main weakness and expect **~10k designs** for
+  hits in the general case. We have ~24 GPU-h. This confirms `PIPELINE.md` §6's honest
+  expectation of 1-3 hits and makes **diversity over depth** the correct strategy.
+- Example CDR loop ranges: `H1:7,H2:6,H3:5-13,L1:8-13,L2:7,L3:9-11`.
+- "RFantibody is more sensitive to exactly which hotspots are selected than vanilla
+  RFdiffusion... will generally just generate an undocked antibody if a bad set of
+  hotspots is given." **Undocked output is the expected symptom of bad hotspots** — this is
+  the thing to look for in the pilot, not a crash.
+- Authors independently flag that **sites with nearby glycans are hard** because the glycan
+  orders on binding. Independent support for the 12 A glycan mask.
+- Hotspot syntax is chain-prefixed target numbering, e.g. `-h "T305,T456"` -> post-crop
+  chain-T numbering. This is exactly the trap in `TARGET_PREP.md` §1.
+
