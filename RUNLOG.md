@@ -1460,3 +1460,30 @@ stage once against real data found all of them inside about twenty minutes.
 `target/README.md` written (the `TARGET_PREP.md` §7 deliverable), also committed into the
 repo as `docs/TARGET_PREP_RECORD.md`.
 
+
+### Regression gate added — `scripts/00_run_all_selftests.sh`
+
+Runs every module's `--self-test` plus `bash -n` on every shell script, and exits
+non-zero if anything fails. Worth having after an evening of edits.
+
+```
+=== self-test regression gate 2026-11-21T13:45:46Z ===
+  ok  qc_liabilities.py       29/29      ok  01_target_prep.py   13/13
+  ok  05_novelty.py           18/18      ok  02_epitopes.py      14/14
+  ok  08_rank_select.py       27/27      ok  03_crop_hlt.py        8/8
+  ok  build_submission.py     19/19      ok  04_interface.py     22/22
+                                         ok  06_harvest.py       15/15
+                                         ok  07_prefilter.py     10/10
+                                         ok  09_boltz_crosscheck 11/11
+  ok  all 5 shell scripts: syntax
+=== 16/16 modules clean ===     (186 individual assertions)
+```
+
+The gate's **first** run reported `05_novelty.py` as failing while its own summary line
+read `18/18 passed`. The gate was grepping output for the string `FAIL`, and several
+test *names* legitimately contain "HARD FAILS" (e.g. "an exact copy of a reference HARD
+FAILS"). Fixed to parse the `self-test: N/M passed` summary and the exit code instead.
+
+A test harness that cries wolf is worth fixing immediately — it is the thing you stop
+reading, and then it stops protecting you.
+
