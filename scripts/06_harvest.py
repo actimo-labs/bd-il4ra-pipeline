@@ -280,7 +280,8 @@ def harvest(limit=None, verbose=True, root=None, pattern="*/*/3_rf2/*.pdb"):
             "random_seed": prov["random_seed"],
             "run_id": prov["run_id"],
             "vh_seq": ex["vh"], "vl_seq": ex["vl"],
-            "ch_type": "Human IgG1", "cl_type": "Human Kappa",
+            # exact dropdown values from the official template, NOT "Human Kappa"
+            "ch_type": "Human IgG1", "cl_type": "Human Ig Kappa",
             "vh_len": len(ex["vh"]), "vl_len": len(ex["vl"]),
             "cdr_definitions_json": json.dumps(ex["cdr_definitions"], separators=(",", ":")),
             "rf2_iface_hl_vs_t": sc.get("interaction_pae", NOT_RUN),

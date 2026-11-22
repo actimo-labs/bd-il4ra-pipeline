@@ -2146,3 +2146,81 @@ it at, and in the gates.
 
 Self-tests after remediation: **17/17 modules clean**, 06 18/18, 08 44/44.
 
+
+---
+
+## 2026-11-22 11:30 UTC — **Official template received. We would have been rejected.**
+Gate: G3  |  Rung: F2  |  T-41.3h
+
+User uploaded `TurboCHO_IgG_AA_Seperate_Region.xlsx`
+(sha256 `b6f59ebc00728dbb20173fd7737da800b0e05465ed65fdaab22eb1e1b209f751`).
+`CHALLENGE_SPEC.md` trap 6 — *"Verify the submission column spec from the live template,
+never from memory or a paraphrase. A prior campaign nearly shipped an invalid enum
+value"* — **was live, and I was about to walk into it.**
+
+### Four ways the real template disagrees with `docs/SUBMISSION.md`
+
+**1. `CL Type` is `Human Ig Kappa`, NOT `Human Kappa`.** This is the fatal one. The
+dropdown at `G2:G961` is bound to `'Constant Region Seq'!$D$3:$D$6`:
+
+```
+Human Ig Kappa | Human Ig Lambda | Rabbit Ig Kappa | Rabbit Ig Lambda
+```
+
+`Human Kappa` — the value `SUBMISSION.md` §1 specifies and my builder hardcoded — **is
+not a member of that list.** All 20 rows would have carried an invalid enum.
+
+**2. Eight columns, not five**, and two of them are interleaved between ours:
+
+```
+Antibody # | Antibody Name | VH Seq | CH Type | CH Seq (Auto-fill) | VL Seq | CL Type | CL Seq (Auto-fill)
+```
+
+**3. `Antibody Name`, capital N** — my builder wrote `Antibody name`.
+
+**4. Columns A, E, H are FORMULAS, not values:**
+
+```
+A2: =IF(B2="","",COUNTA($B$2:B2))
+E2: =IF(D2="","",VLOOKUP(D2,'Constant Region Seq'!$A$3:$C$6,2,0))
+H2: =IF(G2="","",VLOOKUP(G2,'Constant Region Seq'!$D$3:$F$6,2,0))
+```
+
+`CH Type` = `Human IgG1` was correct. The dropdown is
+`Human IgG1 | Human IgG4 | Rabbit IgG`.
+
+### Rewritten: fill the official template, never generate a workbook
+
+`build_submission.py` now **opens the supplied template read-only and fills a copy**.
+Generating our own workbook — what it did before — silently drops the dropdowns, the
+auto-fill formulas and the `Constant Region Seq` sheet those formulas depend on. The
+output would have *looked* right and been inert.
+
+- Enum values are read from the **template's own dropdown ranges at runtime**, not from
+  a constant in my code, so the template stays the authority if it is ever revised.
+- Auto-fill columns are written as **retargeted formulas** (`B2`→`B7`, `$B$2` left
+  alone), never as values.
+- The shipped example row (`IgG Example  1`) is cleared.
+- The written file is **re-opened and verified** — headers unchanged, every sequence
+  matches, auto-fill cells really are formulas, nothing below the data block, and the
+  `Constant Region Seq` sheet still present. On any failure the output is **deleted** and
+  the script exits non-zero.
+- Template sha256 is checked and its own immutability asserted in the self-test.
+
+Self-test **22/22**, including an explicit case asserting that **`Human Kappa` is
+rejected** so this cannot regress.
+
+### Also corrected
+
+- `candidates.tsv`: 660 rows updated `Human Kappa` → `Human Ig Kappa`.
+- `06_harvest.py` now writes the template enum value, so future harvests are correct.
+- Template archived to `docs/` for provenance alongside the methodology record.
+
+Current 20 rebuilt into the official template: **446/446 pre-flight checks passed**,
+written to `out/lkg/round1_official_draft.xlsx`. That is a *draft* — the multi-seed
+rescore will change which 20 those are.
+
+**`docs/SUBMISSION.md` is now known to be wrong in four places.** Per its own §2 —
+*"If the live template disagrees with this document, the template wins and this document
+gets corrected"* — the template won.
+
