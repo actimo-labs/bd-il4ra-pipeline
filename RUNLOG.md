@@ -1904,3 +1904,69 @@ because the chain runs stages strictly in sequence. Interleaving the harvest wit
 Boltz run would recover ~1.5 GPU-h. Not worth disturbing a healthy in-flight chain for
 it, but it is the obvious fix if another round is run.
 
+
+---
+
+## 2026-11-22 06:40 UTC — Chain completed 02:08Z. **A submittable 20 exists.**
+Gate: G2 PASSED, G3 effectively met  |  Rung: F0  |  T-46.3h
+
+The overnight chain ran to completion at **02:08:11Z**, unattended, with no failures.
+
+```
+harvest         660 candidates (460 round-1 + 200 resample), 55 columns
+Boltz-2         80 complexes, joined 80/660 on full candidate_id
+hard filter     58 survivors of 660
+clustering      36 CDR-H3 clusters at 70%
+SELECTED        20  -- E1 12, E2 5, E3 3, exactly the arm targets
+                    19 distinct CDR-H3 clusters (only one cluster has 2)
+pre-flight      406/406 checks passed
+output          out/lkg/round1_draft.xlsx
+```
+
+**All 58 hard-filter survivors have Boltz-2 scores**, so the cross-family comparison
+covers the whole shortlist rather than a subset.
+
+### The resample round produced 78% of the usable pool
+
+```
+survivors by source:   resample 45   round 1 13
+survivors by arm:      E1 39   E2 15   E3 4
+```
+
+45 of 58 from a round that generated 200 of the 660 designs. Combined with the earlier
+`pae<10` rates (26% vs 11%), this is now the clearest result of the campaign:
+**sequence depth on proven backbones beat new geometry by a wide margin**, exactly as
+`PIPELINE.md` §3 rule 2 predicted.
+
+### A false alarm I raised and then corrected
+
+At 06:34 I reported the harvest as "still running after 7h42m with the GPU idle". That
+was wrong. My own background watcher's `pgrep -f "06_harvest.py --out"` was **matching
+its own command line**, so the check could never return false. The chain had in fact
+finished at 02:08. Same self-matching `pgrep` mistake as the earlier
+`12_deep_resample.sh` false positive — twice now, so: **a `pgrep` pattern that appears
+in the watcher's own command line always matches itself.**
+
+The real idle time is ~4.5 h since 02:08, not 7.7 h, and it is idle because the chain had
+no stages left — not because anything hung.
+
+### `docs/PIPELINE_ASBUILT.md` written
+
+Full stage-by-stage record of the pipeline as actually built and run, including the six
+places where reality diverged from `PIPELINE.md` and the six known weaknesses in the
+current 20. Written for the methodology-by-email scenario and for whoever picks this up.
+
+### Known weaknesses in the selected 20 — the optimisation targets
+
+1. **RF2 is single-sample.** We rank on one `interaction_pae` per design while
+   `PIPELINE.md` §3 rule 1 requires multi-sample averaging for any margin metric.
+   Boltz-2 is 5-sample; RF2 is not. This is a real methodological gap in the ranking.
+2. **Cross-family disagreement on 8 of 20.** e.g. rank 35: RF2 pae 3.73 (excellent),
+   Boltz 0.205 (poor).
+3. **8 of 20 have CDR-H3 ≤ 7** (lengths 5,5,5,6,6,7,7,7; median 9). Legal under
+   `H3:5-13` but short for a credible paratope.
+4. **E2 holds 5 slots on quota, not merit** — Boltz 0.205–0.711, masked fraction
+   0.24–0.37, 0–2 of 4 hotspots engaged.
+5. **E3 has only 4 survivors for 3 slots** — zero selection margin.
+6. **Boltz sd median 0.110, max 0.262** across 5 samples — several predictions unstable.
+
