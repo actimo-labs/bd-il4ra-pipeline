@@ -567,14 +567,6 @@ def run_prep(verbose=True):
 
 # ---------------------------------------------------------------- self-test
 
-def _safe_superpose(a, b):
-    try:
-        superpose(a, b)
-        return True
-    except PrepError:
-        return False
-
-
 def self_test():
     """Exercise the geometry and numbering logic on synthetic input.
 
@@ -649,28 +641,47 @@ def self_test():
     check("sequon: Q-A-S must RAISE (not Asn)",
           lambda: validate_sequon("Q", "A", "S"), should_raise=True)
 
-    # superposition recovers a known point
+    # --- superposition, used to recover sequons that are disordered in 1IAR ---
     def mkca(num, xyz):
         r = Residue("B", num, " ", "ALA")
         r.atoms["CA"] = np.array(xyz, dtype=float)
         r.atoms["CB"] = np.array(xyz, dtype=float)
         return r
+
     rngs = np.random.default_rng(3)
     ref = {i: mkca(i, rngs.normal(size=3) * 10) for i in range(80)}
     shift = np.array([7.0, -3.0, 2.0])
     mob = {i: mkca(i, ref[i].atoms["CA"] + shift) for i in range(80)}
-    check("superpose: recovers a pure translation",
-          abs(superpose(ref, mob)[1]) < 1e-6)
-    f_, _, _ = superpose(ref, mob)
-    check("superpose: maps a mobile point back onto its reference counterpart",
-          float(np.linalg.norm(f_(mob[5].atoms["CA"]) - ref[5].atoms["CA"])) < 1e-6)
+
+    check("superpose: a pure translation gives ~0 RMSD",
+          lambda: _assert(abs(superpose(ref, mob)[1]) < 1e-6, "nonzero"))
+    check("superpose: maps a mobile point onto its reference counterpart",
+          lambda: _assert(
+              float(np.linalg.norm(superpose(ref, mob)[0](mob[5].atoms["CA"])
+                                   - ref[5].atoms["CA"])) < 1e-6, "bad mapping"))
     check("superpose: too few shared residues must RAISE",
-          False if _safe_superpose({0: mkca(0, [0, 0, 0])}, {0: mkca(0, [0, 0, 0])}) else True)
-    # an extra anchor point genuinely extends the mask
-    a = mkca(1, [0.0, 0, 0]); far = mkca(2, [40.0, 0, 0])
+          lambda: superpose({0: mkca(0, [0, 0, 0])}, {0: mkca(0, [0, 0, 0])}),
+          should_raise=True)
+    check("superpose: recovers a position ABSENT from the reference "
+          "(the N134 case)",
+          lambda: _assert(
+              float(np.linalg.norm(
+                  superpose({k: v for k, v in ref.items() if k != 5}, mob)[0](
+                      mob[5].atoms["CA"]) - ref[5].atoms["CA"])) < 1e-6,
+              "recovery failed"))
+
+    # --- an extra anchor point genuinely extends the mask ---
+    a0 = mkca(1, [0.0, 0, 0])
+    far = mkca(2, [40.0, 0, 0])
     check("mask: extra_anchor_points extends the masked set",
-          2 in {r.resnum for r in cbeta_mask([a], [a, far], 10.0,
-                                             extra_anchor_points=[np.array([38.0, 0, 0])])})
+          lambda: _assert(
+              2 in {r.resnum for r in cbeta_mask([a0], [a0, far], 10.0,
+                                                 extra_anchor_points=[np.array([38.0, 0, 0])])},
+              "extra anchor ignored"))
+    check("mask: without the extra anchor that residue is NOT masked",
+          lambda: _assert(
+              2 not in {r.resnum for r in cbeta_mask([a0], [a0, far], 10.0)},
+              "masked without anchor"))
 
     print(f"\nself-test: {sum(ok)}/{len(ok)} passed")
     return all(ok)
