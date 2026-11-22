@@ -156,13 +156,13 @@ gates:
   G0_access_viability: { due_local: "2026-11-22T02:00+11:00", status: pending }
   G1_target_and_install: { due_local: "2026-11-22T08:00+11:00", status: PASSED, passed_utc: "2026-11-21T14:40Z" }
   G2_sized_and_launched: { due_local: "2026-11-22T20:00+11:00", status: PASSED, launched_utc: "2026-11-21T13:03:48Z", completed_utc: "2026-11-21T21:11:33Z" }  # round 1 complete: 230/230 backbones, 460 designs
-  G3_pool_exists: { due_local: "2026-11-23T10:00+11:00", status: in_progress }  # 660 designs generated; harvest running, Boltz-2 next
-  G4_design_freeze: { due_local: "2026-11-23T16:00+11:00", status: pending }
+  G3_pool_exists: { due_local: "2026-11-23T10:00+11:00", status: PASSED }   # 805 candidates, 24 survivors, Boltz-2 done
+  G4_design_freeze: { due_local: "2026-11-23T16:00+11:00", status: PASSED, frozen_utc: "2026-11-22T23:50Z" }  # compute complete, 22.16 GPU-h, no further generation
   G5_selection_freeze: { due_local: "2026-11-24T04:00+11:00", status: pending }
   submit: { due_local: "2026-11-24T10:00+11:00", status: pending }
 
 fallback_rung: F0   # F0 both arms | F1 geodesic-only | F2 rfantibody-only | F3 home-roll | F4 submit-what-exists
-last_known_good_pool: /mnt/comp5data/bd-il4r/out/lkg/   # snapshots written by 13_overnight_chain.sh
+last_known_good_pool: /mnt/comp5data/bd-il4r/out/lkg/round1_FINAL.xlsx   # 20 designs, 446/446 checks, all 5-seed scored
 
 # Provisional funnel, n=20, E1 only, batch 0. NOT A RATE -- CLAUDE.md forbids acting on
 # n<100. Recompute at n>100 before using for any decision.

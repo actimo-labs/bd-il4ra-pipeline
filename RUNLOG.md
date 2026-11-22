@@ -2308,3 +2308,86 @@ The GPU sat **idle from 15:58 to 19:36** — 3.6 h — because `14_rf2_multiseed
 aggregation and I never chained the next stage, despite the code auditor flagging exactly
 that. Second time this campaign that a stage boundary cost idle GPU.
 
+
+---
+
+## 2026-11-22 23:50 UTC — **COMPUTE COMPLETE.** Final 20 locked. GPU released.
+Gate: G3/G4  |  Rung: F2  |  T-29.2h
+
+### Final set
+
+```
+20 designs  |  20/20 scored on a 5-SEED MEAN  |  20 distinct CDR-H3  |  0 duplicates
+arms E1 18 / E2 2     11 CDR-H3 clusters     12 distinct backbones
+CDR-H3 length min 6 / median 9 / max 13      between-seed sd median 2.17
+446/446 submission pre-flight checks against the OFFICIAL template
+-> out/lkg/round1_FINAL.xlsx + candidates_FINAL.tsv
+```
+
+### The contamination is repaired
+
+5 of the 20 had been selected on single RF2 samples, ranked against 15 with 5-seed
+means. The manifest was rebuilt from the pre-merge snapshot and re-selected:
+**20/20 now carry a 5-seed mean.** Verified explicitly, not assumed.
+
+### Round 2 cost ~3 GPU-h and changed nothing. Stated plainly.
+
+```
+round-2 designs generated        145   (145/145 eligible -- prefilter worked perfectly)
+screened at single-sample pae<14  35
+rescored at 5 seeds               35
+  pae<10 on single sample         12
+  pae<10 on the 5-seed MEAN        4     <- 8 of 12 were lottery, again
+passing ALL gates                  0
+```
+
+The final 20 is **byte-identical** to the pre-round-2 last-known-good.
+
+**This was variance, not a broken run.** Round-2 quality matched round 1 (5-seed mean pae
+median 13.14 vs 13.54; dock RMSD median 18.0 vs 19.5). At round 1's ~9% all-gate rate
+among rescored designs (24/278), 35 screened designs predict ~3 survivors. We got 0.
+That is an ordinary outcome of a small sample, and the decision to spend ~3 GPU-h for an
+expected ~3 extra clusters was defensible ex ante. It did not pay.
+
+The honest lesson is about **sizing**: 35 screened designs was too thin to move an
+11-cluster set. Either commit enough to matter or don't start — a marginal run has a
+real chance of buying nothing, and that is what happened.
+
+### And a repeat failure I own
+
+The chain's round-2 screen used `conda run ... python - <<'HEREDOC'`, which **does not
+forward stdin**. It reported "no round-2 designs passed the screen" when 35 had. I had
+already found this exact bug, written it up prominently, and extracted three separate
+scripts to avoid it — then wrote a fresh heredoc into the final chain. **Third occurrence,
+and the second after I documented it.**
+
+Worse, it failed *silently and plausibly*: "nothing qualified" is indistinguishable from
+a real negative. The merge then proceeded and put single-sample designs into the
+submission.
+
+Fixed structurally rather than by care: `collect_r2_rescore.py` is a real file and
+**refuses to continue if it collects zero designs from a non-empty pool** — the exact
+shape of this failure. `17_r2_rescore_select.sh` contains zero heredocs, verified by grep.
+
+### Total compute
+
+```
+round 1 generation          8.13 h
+deep resample               1.68 h
+multiseed rescore (r1)      8.80 h
+round 2 generation          1.78 h
+round 2 rescore             1.17 h
+pilot / boltz / tests       0.60 h
+                           ------
+TOTAL                      22.16 GPU-h
+```
+
+Inside `PIPELINE.md`'s 20-28 h envelope. **GPU is now idle and no further runs are
+planned.**
+
+### What remains (no GPU)
+
+1. Bucket push — needs the bucket name and VM re-auth. User's call.
+2. Dr. G submission — human-in-the-loop, the user drives it.
+3. `docs/SUBMISSION.md` correction: it is wrong in four places versus the real template.
+
