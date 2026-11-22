@@ -39,7 +39,11 @@ def other(p, key):
     return None
 
 
+MIN_SEEDS = 3   # refuse to average fewer than this; 1-2 samples is the problem, not the fix
+
+
 def main():
+    allow_partial = "--allow-partial" in sys.argv
     root, man = Path(sys.argv[1]), Path(sys.argv[2])
     mapping = json.loads((root / "name_to_candidate.json").read_text())
 
@@ -65,6 +69,17 @@ def main():
     ns = [len(v) for v in per.values()]
     print(f"[aggregate] samples per design: min {min(ns)} median {statistics.median(ns):.0f} max {max(ns)}")
 
+    # HARD GUARD. Running this on a partial sweep silently mixes 1-sample and n-sample
+    # values into one column that ranking then gates on as if comparable -- which is the
+    # exact failure this whole job exists to fix. Refuse rather than warn.
+    if min(ns) < MIN_SEEDS and not allow_partial:
+        short = sum(1 for n in ns if n < MIN_SEEDS)
+        sys.exit(
+            f"REFUSING TO AGGREGATE: {short} of {len(ns)} designs have fewer than "
+            f"{MIN_SEEDS} seeds (min {min(ns)}). A partial sweep would put 1-sample and "
+            f"n-sample means in the same column and rank them against each other. "
+            f"Let the sweep finish, or pass --allow-partial if you genuinely want this.")
+
     rows = list(csv.DictReader(open(man), delimiter="\t"))
     cols = list(rows[0].keys())
     for c in ("rf2_iface_single_sample", "rf2_iface_mean", "rf2_iface_sd",
@@ -85,16 +100,24 @@ def main():
         v = per.get(r["candidate_id"])
         if not v:
             continue
-        single = r.get("rf2_iface_hl_vs_t")
         mean = statistics.mean(v)
-        r["rf2_iface_single_sample"] = single
+        # IDEMPOTENCE: on a second run rf2_iface_hl_vs_t already holds the mean, so
+        # reading it here would overwrite the preserved original with the mean and
+        # destroy the audit trail this field exists for. Only ever write it once.
+        if str(r.get("rf2_iface_single_sample", "not_run")) == "not_run":
+            r["rf2_iface_single_sample"] = r.get("rf2_iface_hl_vs_t")
+        single = r.get("rf2_iface_single_sample")
         r["rf2_iface_mean"] = round(mean, 3)
-        r["rf2_iface_sd"] = round(statistics.pstdev(v), 3) if len(v) > 1 else "not_run"
+        # sample stdev, not population: 5 seeds are a sample of RF2's output distribution
+        r["rf2_iface_sd"] = round(statistics.stdev(v), 3) if len(v) > 1 else "not_run"
         r["rf2_iface_n_seeds"] = len(v)
         r["rf2_iface_max"] = round(max(v), 3)
         rv = per_rmsd.get(r["candidate_id"])
         if rv:
             r["rf2_dock_rmsd_mean"] = round(statistics.mean(rv), 2)
+            # ranking reads rf2_target_aligned_antibody_rmsd -- point it at the mean too,
+            # or the pae in the same 0.40 RF2 block is multi-seed while this stays single
+            r["rf2_target_aligned_antibody_rmsd"] = round(statistics.mean(rv), 2)
         # the ranking reads rf2_iface_hl_vs_t -- point it at the MEAN
         try:
             s = float(single)
@@ -117,7 +140,7 @@ def main():
     print(f"[aggregate] designs that CROSSED the pae<10 threshold once averaged:")
     print(f"              passed single-sample but fail on the mean: {moved_out}")
     print(f"              failed single-sample but pass on the mean: {moved_in}")
-    sds = [statistics.pstdev(v) for v in per.values() if len(v) > 1]
+    sds = [statistics.stdev(v) for v in per.values() if len(v) > 1]
     if sds:
         print(f"[aggregate] between-seed sd: median {statistics.median(sds):.2f} "
               f"max {max(sds):.2f}")

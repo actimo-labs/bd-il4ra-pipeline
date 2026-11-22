@@ -141,8 +141,20 @@ def rank_within_family(rows, field, lower_is_better=True):
         return out
     have.sort(key=lambda cv: cv[1], reverse=not lower_is_better)
     n = len(have)
-    for i, (c, _) in enumerate(have):
-        out[c] = 1.0 - (i / (n - 1)) if n > 1 else 1.0
+    # AVERAGE RANK WITHIN TIED GROUPS. Assigning by position makes the result depend on
+    # row order in candidates.tsv: ties are rife here (56 of 58 survivors tie on
+    # nearest_ref_cdrh3_identity, 51 on epitope_contact_frac), and shuffling the file
+    # swapped up to 2 of the selected 20. Equal scores must get equal ranks.
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and have[j + 1][1] == have[i][1]:
+            j += 1
+        avg_pos = (i + j) / 2.0
+        norm = 1.0 - (avg_pos / (n - 1)) if n > 1 else 1.0
+        for k in range(i, j + 1):
+            out[have[k][0]] = norm
+        i = j + 1
     return out
 
 
@@ -233,6 +245,16 @@ def select(rows, n_select=N_SELECT, arm_targets=None, verbose=True):
         if verbose:
             print(m)
 
+    # Clear stale selection state on EVERY row first. Previously only `chosen` and
+    # `rejected` were written, so a row that was selected on a PREVIOUS run and is
+    # eligible-but-not-chosen on this one kept selected=yes. Re-running after the
+    # multi-seed rescore (whose whole purpose is to grow the eligible pool) produced
+    # 34 rows marked selected=yes, which build_submission.py would then refuse at T-6h.
+    for r in rows:
+        r["selected"] = "no"
+        r["rank_final"] = NOT_RUN
+        r["cluster_id"] = NOT_RUN
+
     eligible, rejected = [], []
     for r in rows:
         ok, why = passes_hard_filter(r)
@@ -259,12 +281,22 @@ def select(rows, n_select=N_SELECT, arm_targets=None, verbose=True):
             return r.get("candidate_id", "")
 
     cl = cluster_by_identity(pool, h3_of, CLUSTER_CUT)
+    # name clusters by their lexicographically smallest member so the label is a
+    # function of membership, not of row order
+    members = {}
     for i, r in enumerate(pool):
-        r["cluster_id"] = f"c{cl[i]:03d}"
+        members.setdefault(cl[i], []).append(r["candidate_id"])
+    order = sorted(members, key=lambda k: min(members[k]))
+    relabel = {k: n for n, k in enumerate(order)}
+    for i, r in enumerate(pool):
+        r["cluster_id"] = f"c{relabel[cl[i]]:03d}"
     nclust = len(set(cl.values()))
     log(f"[select] {nclust} CDR-H3 clusters at {CLUSTER_CUT:.0%} single-linkage identity")
 
-    pool.sort(key=lambda r: -r["_composite"])
+    # candidate_id as the secondary key: Python's sort is stable, so without it two
+    # designs with an identical composite keep whatever order the file happened to have,
+    # and the greedy passes below then pick a different representative per run.
+    pool.sort(key=lambda r: (-r["_composite"], r["candidate_id"]))
     for i, r in enumerate(pool, 1):
         r["rank_final"] = i
 
@@ -332,8 +364,14 @@ def select(rows, n_select=N_SELECT, arm_targets=None, verbose=True):
 
     for r in chosen:
         r["selected"] = "yes"
+    chosen_ids = {r["candidate_id"] for r in chosen}
+    for r in pool:
+        if r["candidate_id"] not in chosen_ids:
+            # eligible but not picked -- say so, rather than leaving rejection_reason
+            # as not_run, which reads as "passed everything, dropped for no reason"
+            r["rejection_reason"] = (f"eligible, not selected (rank {r.get('rank_final')}"
+                                     f" of {len(pool)}; arm/cluster quota)")
     for r, why in rejected:
-        r["selected"] = "no"
         if r.get("rejection_reason") in (None, "", NOT_RUN):
             r["rejection_reason"] = why
 
@@ -461,6 +499,36 @@ def self_test():
     check("select: cross-family agreement is not_run when Boltz-2 has not been run",
           score_rows([dict(mk(0, "E1", "AAAAAAA", 5.0))])["d0"]["cross_family_agree"]
           == NOT_RUN)
+
+    # --- ties must not depend on row order ---
+    tied = [{"candidate_id": "a", "x": "5"}, {"candidate_id": "b", "x": "5"},
+            {"candidate_id": "c", "x": "1"}]
+    rk = rank_within_family(tied, "x", lower_is_better=True)
+    check("rank: tied values get the SAME normalised rank", rk["a"] == rk["b"])
+    check("rank: the untied better value still wins", rk["c"] > rk["a"])
+    rk2 = rank_within_family(list(reversed(tied)), "x", lower_is_better=True)
+    check("rank: result is independent of row order",
+          rk == rk2)
+
+    # --- selection must be order-independent end to end ---
+    import random as _rnd
+    base_pool = [mk(i, "E1", DIVERSE_H3[i % len(DIVERSE_H3)] + "X" * (i // 10),
+                    1.0 + (i % 3) * 0.1) for i in range(24)]
+    s1, _ = select([dict(r) for r in base_pool], n_select=20, verbose=False)
+    shuf = [dict(r) for r in base_pool]
+    _rnd.Random(7).shuffle(shuf)
+    s2, _ = select(shuf, n_select=20, verbose=False)
+    check("select: the same pool in a different row order gives the same 20",
+          {r["candidate_id"] for r in s1} == {r["candidate_id"] for r in s2})
+
+    # --- stale selected=yes must be cleared ---
+    stale = [dict(r) for r in base_pool]
+    for r in stale:
+        r["selected"] = "yes"          # pretend a previous run marked everything
+    sel_s, _ = select(stale, n_select=20, verbose=False)
+    n_yes = sum(1 for r in stale if r["selected"] == "yes")
+    check("select: stale selected=yes from a previous run is cleared",
+          n_yes == len(sel_s) == 20)
 
     print(f"\nself-test: {sum(ok)}/{len(ok)} passed")
     return all(ok)

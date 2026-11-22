@@ -184,6 +184,12 @@ def parse_ssbond(path, chain):
 
 # ---------------------------------------------------------------- numbering
 
+def tp_parse_chain(path, chain):
+    """{resnum: Residue} for one chain."""
+    ch = parse_pdb(path, chains={chain})
+    return {r.resnum: r for r in ch.get(chain, [])}
+
+
 def derive_offset(seqadv_rows, structure_name):
     """uniprot_resnum = pdb_resnum + offset, derived from SEQADV and asserted unique."""
     offsets = set()
@@ -217,9 +223,31 @@ def residues_within(res_a, res_b_list, cutoff):
     return hits
 
 
-def cbeta_mask(anchor_res, all_res, radius):
+def superpose(ref_by_num, mob_by_num):
+    """Kabsch rotation+translation taking `mob` coordinates into the `ref` frame.
+
+    Returns a function mapping a mobile-frame point into the reference frame.
+    """
+    shared = sorted(k for k in set(ref_by_num) & set(mob_by_num)
+                    if "CA" in ref_by_num[k].atoms and "CA" in mob_by_num[k].atoms)
+    _assert(len(shared) >= 50,
+            f"only {len(shared)} shared CA between structures; refusing to superpose")
+    P = np.array([ref_by_num[k].atoms["CA"] for k in shared])
+    Q = np.array([mob_by_num[k].atoms["CA"] for k in shared])
+    Pm, Qm = P.mean(0), Q.mean(0)
+    V, S, Wt = np.linalg.svd((P - Pm).T @ (Q - Qm))
+    d = np.sign(np.linalg.det(V @ Wt))
+    R = V @ np.diag([1.0, 1.0, d]) @ Wt
+    rms = float(np.sqrt((((Q - Qm) @ R.T) - (P - Pm)) .__pow__(2).sum(1).mean()))
+    return (lambda xyz: ((np.asarray(xyz) - Qm) @ R.T) + Pm), rms, len(shared)
+
+
+def cbeta_mask(anchor_res, all_res, radius, extra_anchor_points=None):
     """Residues whose Cbeta lies within `radius` of any anchor Cbeta."""
-    anchors = np.array([r.cbeta() for r in anchor_res if r.cbeta() is not None])
+    pts = [r.cbeta() for r in anchor_res if r.cbeta() is not None]
+    if extra_anchor_points:
+        pts = pts + list(extra_anchor_points)
+    anchors = np.array(pts)
     masked = []
     for r in all_res:
         cb = r.cbeta()
@@ -461,7 +489,33 @@ def run_prep(verbose=True):
     for r in anchors:
         _assert(r.resname == "ASN", f"sequon anchor pdb {r.resnum} is {r.resname}, not ASN")
 
-    masked = cbeta_mask(anchors, rec, GLYCAN_MASK_RADIUS)
+    # A sequon that is DISORDERED in the primary structure is still glycosylated on the
+    # real antigen. Skipping it leaves a hole in the mask exactly where we cannot see.
+    # N134 (pdb 109) is unresolved in 1IAR and WAS silently skipped: 7 of 10 E3 residues
+    # and 3 of 4 E3 hotspots sit inside its 10 A shell, so E3 was defined on surface that
+    # should have been excluded. Recover the position from 3BPN by superposition.
+    recovered = []
+    if unobserved_sequons and bpn_pdb.exists():
+        mob = tp_parse_chain(bpn_pdb, "B")
+        to_ref, srms, nsh = superpose({r.resnum: r for r in rec}, mob)
+        for p in unobserved_sequons:
+            if p in mob and mob[p].cbeta() is not None:
+                xyz = to_ref(mob[p].cbeta())
+                recovered.append(xyz)
+                log(f"[glycan] RECOVERED unresolved sequon pdb {p} (uniprot {to_unp(p)}) "
+                    f"from 3BPN {mob[p].resname}{p} via {nsh}-CA superposition "
+                    f"(RMSD {srms:.2f} A)")
+            else:
+                log(f"[glycan] *** sequon pdb {p} unresolved in BOTH structures ***")
+    report["sequons_recovered_from_3BPN"] = len(recovered)
+
+    # every sequon must contribute an anchor, observed or recovered
+    _assert(len(anchors) + len(recovered) == len(SEQUONS_UNIPROT),
+            f"only {len(anchors)}+{len(recovered)} of {len(SEQUONS_UNIPROT)} sequons have "
+            f"a mask anchor. A missing sequon leaves an unmasked hole in the surface.")
+
+    masked = cbeta_mask(anchors, rec, GLYCAN_MASK_RADIUS,
+                        extra_anchor_points=recovered)
     masked_pdb = sorted(r.resnum for r in masked)
     log(f"[glycan] radius {GLYCAN_MASK_RADIUS} A -> {len(masked_pdb)} of {len(rec)} "
         f"observed residues masked ({100*len(masked_pdb)/len(rec):.0f}%)")
@@ -512,6 +566,14 @@ def run_prep(verbose=True):
 
 
 # ---------------------------------------------------------------- self-test
+
+def _safe_superpose(a, b):
+    try:
+        superpose(a, b)
+        return True
+    except PrepError:
+        return False
+
 
 def self_test():
     """Exercise the geometry and numbering logic on synthetic input.
@@ -586,6 +648,29 @@ def self_test():
           lambda: validate_sequon("N", "A", "A"), should_raise=True)
     check("sequon: Q-A-S must RAISE (not Asn)",
           lambda: validate_sequon("Q", "A", "S"), should_raise=True)
+
+    # superposition recovers a known point
+    def mkca(num, xyz):
+        r = Residue("B", num, " ", "ALA")
+        r.atoms["CA"] = np.array(xyz, dtype=float)
+        r.atoms["CB"] = np.array(xyz, dtype=float)
+        return r
+    rngs = np.random.default_rng(3)
+    ref = {i: mkca(i, rngs.normal(size=3) * 10) for i in range(80)}
+    shift = np.array([7.0, -3.0, 2.0])
+    mob = {i: mkca(i, ref[i].atoms["CA"] + shift) for i in range(80)}
+    check("superpose: recovers a pure translation",
+          abs(superpose(ref, mob)[1]) < 1e-6)
+    f_, _, _ = superpose(ref, mob)
+    check("superpose: maps a mobile point back onto its reference counterpart",
+          float(np.linalg.norm(f_(mob[5].atoms["CA"]) - ref[5].atoms["CA"])) < 1e-6)
+    check("superpose: too few shared residues must RAISE",
+          False if _safe_superpose({0: mkca(0, [0, 0, 0])}, {0: mkca(0, [0, 0, 0])}) else True)
+    # an extra anchor point genuinely extends the mask
+    a = mkca(1, [0.0, 0, 0]); far = mkca(2, [40.0, 0, 0])
+    check("mask: extra_anchor_points extends the masked set",
+          2 in {r.resnum for r in cbeta_mask([a], [a, far], 10.0,
+                                             extra_anchor_points=[np.array([38.0, 0, 0])])})
 
     print(f"\nself-test: {sum(ok)}/{len(ok)} passed")
     return all(ok)
