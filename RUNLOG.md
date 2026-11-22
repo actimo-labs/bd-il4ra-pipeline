@@ -2057,3 +2057,92 @@ and reasoned about the real thing (the designs) without checking.** Same error s
 the identity-denominator bug, just in the opposite direction — there I was too lax, here
 too alarmed.
 
+
+---
+
+## 2026-11-22 09:30–11:30 UTC — Audit remediation. Two independent auditors, both earned their keep.
+Gate: G3  |  Rung: F2  |  T-41.5h
+
+Spawned two independent reviewers with the data and specs but **not** my conclusions —
+one on scientific decisions, one on code and manifest fidelity. Both found real defects.
+
+### The one that matters: **E3 was an artefact of missing crystallographic density**
+
+Verified independently before acting. **N134 (pdb 109) is disordered in 1IAR**, so
+`01_target_prep.py` printed `*** sequon(s) UNRESOLVED ***` and skipped it, leaving an
+unmasked hole. Recovering its position from 3BPN (GLN109, the N134Q crystallisation
+mutant) via 188-Cα superposition at 1.10 Å:
+
+```
+7/10 old-E3 residues  inside the 10 A shell of N134
+3/4  old-E3 HOTSPOTS  inside the shell
+E1  0/13 affected     E2  0/11 affected
+```
+
+`glycan_mask.json`'s own provenance text cites N134Q as evidence that site is
+glycosylated — and then masked every sequon except it.
+
+**Fixed properly rather than patched**: `superpose()` + `extra_anchor_points`, and the
+script now **refuses to run** unless every sequon contributes a mask anchor. Mask is
+71/188 (was 63). Re-running epitope selection: **E1 and E2 unchanged**; old E3 no longer
+passes the gates at all, replaced by seed D171 (W164/A170/F172/Y197).
+
+E1 and E2 crops are byte-identical so their 560 designs stay valid. `crops/` holds v1
+(matching existing designs), `crops_v2/` the corrected set. Old `target/` preserved as
+`target_preN134fix/`. Arm **E3 marked invalid** in `INVALID_ARMS` with the full reason,
+so its 100 designs are rejected *with a stated cause* rather than silently dropped.
+
+**This was my error.** The warning was printed, logged, and not acted on.
+
+### Code defects fixed
+
+| Defect | Was | Now |
+|---|---|---|
+| Ties ranked by **file position** | shuffling `candidates.tsv` swapped 2 of the 20 | rank averaged within tied groups + `candidate_id` secondary sort key. Changed 1 of the 20 |
+| `select()` left stale `selected=yes` | re-running post-rescore marked **34** selected, blocking submission | all selection state cleared first; eligible-but-unchosen rows get a real reason |
+| `aggregate_multiseed` no min-seed guard | would mix 1-sample and n-sample means | refuses below 3 seeds — **verified it fires on the live partial run** |
+| `aggregate_multiseed` not idempotent | 2nd run overwrote the preserved single-sample value | written once only; sample stdev not population; dock RMSD now averaged into the field ranking reads |
+| **CDR slice check was a tautology** | compared `dom[s0:s1]` to a value *defined* as `dom[s0:s1]`; a +3 shift of every boundary passed | validates non-CDR positions against the **fixed hu4D5-8 framework** — independent of how the indices were derived. 20/20 real designs pass; a +3 shift is caught |
+| Novelty shortlist `topk=12` | under-reported nearest identity by up to 0.056 while the margin to the 0.70 gate was 0.033 | raised to 60 |
+
+### Two new hard gates, both fitted to the data rather than guessed
+
+**`epitope_contact_frac >= 0.25`.** There was **no epitope gate at all**, and two designs
+reached the submitted 20 while contacting their own epitope on **0%** and 18% of
+contacts. Survivor distribution: median 0.615, p25 0.455 — a 0.25 floor costs 4 of 58.
+
+**`target_aligned_antibody_rmsd <= 10.0 Å`.** I had demoted this metric because the
+README's literal 2 Å reading passes 0/58. That was the wrong response: the metric
+discriminates (Spearman −0.294 with epitope contact). Fitting the threshold to the
+observed distribution (median 6.71, p75 10.53) keeps 42 of 58. **Rejecting a working
+metric because one arbitrary threshold fails, instead of fitting the threshold, was my
+error.**
+
+### Secondary clustering implemented as specified
+
+`RANKING_AND_QC.md` §6 asks for CDR-H3 clustering **and** "secondary clustering on
+concatenated-CDR identity". Only H3 was implemented, letting three near-duplicate pairs
+off the *same* RFdiffusion backbone into the 20 (concat identity 0.66–0.77). Merged
+linkage at H3 0.70 **or** concat 0.60. Cluster count drops 36 → 17, i.e. the old figure
+was **over-stating diversity**.
+
+### Pool after all of the above (pre-rescore)
+
+```
+660 candidates -> 41 pass the hard filter (was 58)
+  E1 33   E2 5   E3 0 (arm invalidated)
+```
+
+38 non-E3 survivors for 20 slots. Still ample.
+
+### What the auditors confirmed as correct
+
+Worth recording, because it is evidence the core is sound: the code auditor re-derived
+every `rf2_*` column for **all 660 rows** and fully recomputed **all 20 selected rows**
+from raw PDBs — **zero mismatches**. No duplicate (VH,VL) pairs. The (H+L) vs T chain
+selection is real and asserted. `build_target_map` genuinely catches both wrong-arm and
+off-by-one crops. The manifest is faithful; the errors were upstream in what we pointed
+it at, and in the gates.
+
+Self-tests after remediation: **17/17 modules clean**, 06 18/18, 08 44/44.
+

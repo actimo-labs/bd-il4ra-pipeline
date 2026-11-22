@@ -53,8 +53,35 @@ MIN_BSA = 400.0
 # designs. Above the gate it is a hard reject; below it, it is a ranked penalty.
 MAX_MASKED_CONTACT_FRAC = 0.40
 
+# [ASSUMPTION] A design must actually contact the patch it was designed against.
+# There was no epitope gate at all, and two designs reached the submitted 20 while
+# contacting their own epitope on 0% and 18% of their contacts ("DOCKED OFF-EPITOPE").
+# Survivor distribution: median 0.615, p25 0.455; a 0.25 floor costs 4 of 58 and
+# removes exactly the designs that are not testing the design hypothesis.
+MIN_EPITOPE_CONTACT_FRAC = 0.25
+
+# [ASSUMPTION] Does RF2 place the antibody where it was designed to sit?
+# The RFantibody README's "RMSD(design vs predicted) < 2 A" is unusable on this metric
+# (0/58 pass, min 2.10). But the metric itself discriminates: it correlates with
+# epitope contact (Spearman -0.294) and with hotspot engagement. Rather than discard a
+# working metric because one arbitrary threshold fails, the threshold is fitted to the
+# observed distribution -- median 6.71, p75 10.53 -- at 10.0 A, keeping 42 of 58.
+MAX_DOCK_RMSD = 10.0
+
+# Arms whose epitope definition has been invalidated. Designs in these arms are rejected
+# with a stated reason rather than silently dropped, so the manifest records why.
+INVALID_ARMS = {
+    "E3": ("defined against a patch that only existed because sequon N134 (pdb 109) is "
+           "disordered in 1IAR and was skipped by the glycan mask. Recovering N134 from "
+           "3BPN (188-CA superposition, 1.10 A) puts 7/10 of that patch's residues and "
+           "3/4 of its hotspots inside the 10 A shell. With the mask corrected the patch "
+           "no longer passes the epitope gates at all. A replacement E3 patch (seed D171) "
+           "exists in target/crops_v2/; designs against it will be arm E3v2."),
+}
+
 # diversity, RANKING_AND_QC.md section 6
 CLUSTER_CUT = 0.70
+CONCAT_CLUSTER_CUT = 0.60      # RANKING_AND_QC.md s6: secondary concatenated-CDR linkage
 MAX_PER_CLUSTER = 3
 N_SELECT = 20
 ARM_TARGETS = {"E1": 12, "E2": 5, "E3": 3}
@@ -179,6 +206,17 @@ def passes_hard_filter(r):
     if mf is not None and mf > MAX_MASKED_CONTACT_FRAC:
         return False, (f"masked_contact_frac {mf:.2f} > {MAX_MASKED_CONTACT_FRAC} "
                        f"-- too much of the interface is on presumed-glycosylated surface")
+    arm = r.get("epitope_arm")
+    if arm in INVALID_ARMS:
+        return False, f"arm {arm} invalidated: {INVALID_ARMS[arm]}"
+    ef = num(r.get("epitope_contact_frac"))
+    if ef is not None and ef < MIN_EPITOPE_CONTACT_FRAC:
+        return False, (f"epitope_contact_frac {ef:.2f} < {MIN_EPITOPE_CONTACT_FRAC} "
+                       f"-- does not contact the patch it was designed against")
+    dr = num(r.get("rf2_target_aligned_antibody_rmsd"))
+    if dr is not None and dr > MAX_DOCK_RMSD:
+        return False, (f"target_aligned_antibody_rmsd {dr:.1f} > {MAX_DOCK_RMSD} A "
+                       f"-- RF2 does not place it where it was designed to bind")
     return True, ""
 
 
@@ -280,7 +318,35 @@ def select(rows, n_select=N_SELECT, arm_targets=None, verbose=True):
         except Exception:
             return r.get("candidate_id", "")
 
-    cl = cluster_by_identity(pool, h3_of, CLUSTER_CUT)
+    def concat_of(r):
+        try:
+            d = json.loads(r["cdr_definitions_json"])
+            return "".join(d[k]["sequence"] for k in sorted(d))
+        except Exception:
+            return r.get("candidate_id", "")
+
+    # RANKING_AND_QC.md s6 step 1 asks for CDR-H3 clustering AND "secondary clustering on
+    # concatenated-CDR identity". Only H3 was implemented, which let three near-duplicate
+    # pairs off the SAME RFdiffusion backbone into the 20 (concat identity 0.66-0.77).
+    # Merge the two linkages: designs are in one cluster if they are close on EITHER.
+    cl_h3 = cluster_by_identity(pool, h3_of, CLUSTER_CUT)
+    cl_cc = cluster_by_identity(pool, concat_of, CONCAT_CLUSTER_CUT)
+    merged, nxt = {}, 0
+    key_map = {}
+    for i in range(len(pool)):
+        k = (cl_h3[i], cl_cc[i])
+        # union the two partitions: anything sharing either label joins
+        found = None
+        for kk, v in key_map.items():
+            if kk[0] == k[0] or kk[1] == k[1]:
+                found = v
+                break
+        if found is None:
+            found = nxt
+            nxt += 1
+        key_map[k] = found
+        merged[i] = found
+    cl = merged
     # name clusters by their lexicographically smallest member so the label is a
     # function of membership, not of row order
     members = {}
@@ -529,6 +595,34 @@ def self_test():
     n_yes = sum(1 for r in stale if r["selected"] == "yes")
     check("select: stale selected=yes from a previous run is cleared",
           n_yes == len(sel_s) == 20)
+
+    check("filter: a design that misses its epitope is rejected",
+          not passes_hard_filter(dict(base, epitope_contact_frac="0.0"))[0])
+    check("filter: good epitope contact passes",
+          passes_hard_filter(dict(base, epitope_contact_frac="0.6"))[0])
+    check("filter: a design RF2 docks 44 A from the design pose is rejected",
+          not passes_hard_filter(dict(base, rf2_target_aligned_antibody_rmsd="44.5"))[0])
+    check("filter: a well-docked design passes",
+          passes_hard_filter(dict(base, rf2_target_aligned_antibody_rmsd="6.0"))[0])
+    check("filter: not_run on the new gates does not reject",
+          passes_hard_filter(dict(base, epitope_contact_frac=NOT_RUN,
+                                  rf2_target_aligned_antibody_rmsd=NOT_RUN))[0])
+    INVALID_ARMS["E9"] = "test"
+    check("filter: a design in an invalidated arm is rejected with a reason",
+          not passes_hard_filter(dict(base, epitope_arm="E9"))[0]
+          and "invalidated" in passes_hard_filter(dict(base, epitope_arm="E9"))[1])
+    INVALID_ARMS.pop("E9")
+
+    # near-duplicates off one backbone must now share a cluster
+    dup = [mk(0, "E1", "APIGGHALSH", 5.0), mk(1, "E1", "SAKGSHALSH", 5.1),
+           mk(2, "E1", "QKLRPTVWMD", 5.2)]
+    for r, cc in zip(dup, ["APIGGHALSHRAYQGGMLY", "SAKGSHALSHQAYQGGMLY", "QKLRPTVWMDWWWWWWWWW"]):
+        r["cdr_definitions_json"] = json.dumps(
+            {"H3": {"sequence": cc[:10]}, "L3": {"sequence": cc[10:]}})
+    sel_d, _ = select([dict(r) for r in dup], n_select=20, verbose=False)
+    cids = {r["cluster_id"] for r in sel_d}
+    check("select: near-duplicate CDR sets off one backbone share a cluster",
+          len(cids) < 3)
 
     print(f"\nself-test: {sum(ok)}/{len(ok)} passed")
     return all(ok)

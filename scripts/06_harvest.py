@@ -90,6 +90,41 @@ def read_cdr_labels(pdb):
     return {k: sorted(v) for k, v in lab.items()}
 
 
+# hu4D5-8 Fv, the fixed framework every design is built on. Positions outside the CDRs
+# must match this exactly; that is what makes the CDR boundaries checkable.
+FRAMEWORK_VH = ("EVQLVESGGGLVQPGGSLRLSCAASGFNIKDTYIHWVRQAPGKGLEWVARIYPTNGYTRYADSVKGRFTIS"
+                "ADTSKNTAYLQMNSLRAEDTAVYYCSRWGYAMDYWGQGTLVTVSS")
+FRAMEWORK_VL = ("DIQMTQSPSSLSASVGDRVTITCRASQDVNTAVAWYQQKPGKAPKLLIYSASFLYSGVPSRFSGSRSGTDFT"
+                "LTISSLQPEDFATYYCQQHYTTPPTFGQGTKVEIK")
+
+
+def check_framework_outside_cdrs(ex, max_mismatch=0):
+    """Return a list of problems if non-CDR positions diverge from the framework.
+
+    Independent of how the CDR indices were derived, so it genuinely tests them.
+    Compares the N-terminal and C-terminal framework runs flanking the CDR span, which
+    are unaffected by CDR length changes.
+    """
+    problems = []
+    for chain, dom, fw in (("VH", ex["vh"], FRAMEWORK_VH), ("VL", ex["vl"], FRAMEWORK_VL)):
+        spans = sorted((d["start_idx"], d["end_idx"]) for d in ex["cdr_definitions"].values()
+                       if d["chain"] == chain)
+        if not spans:
+            problems.append(f"{chain}: no CDRs recorded")
+            continue
+        # leading framework: before the first CDR, indices are shared with the framework
+        lead_n = spans[0][0]
+        if dom[:lead_n] != fw[:lead_n]:
+            problems.append(f"{chain}: {lead_n} residues before the first CDR do not match "
+                            f"the hu4D5-8 framework")
+        # trailing framework: after the last CDR, align from the C-terminus
+        tail_n = len(dom) - spans[-1][1]
+        if tail_n > 0 and dom[-tail_n:] != fw[-tail_n:]:
+            problems.append(f"{chain}: {tail_n} residues after the last CDR do not match "
+                            f"the hu4D5-8 framework")
+    return problems
+
+
 def extract(pdb, reason=None):
     """VH/VL sequences + CDR definitions as 0-based slices into each domain.
 
@@ -184,13 +219,20 @@ def harvest(limit=None, verbose=True, root=None, pattern="*/*/3_rf2/*.pdb"):
             log(f"  [quarantine] {cid}: {why[0] if why else 'unknown'}")
             continue
 
-        # CDR slice assertion -- RANKING_AND_QC.md section 1
-        bad = [k for k, d in ex["cdr_definitions"].items()
-               if (ex["vh"] if d["chain"] == "VH" else ex["vl"])
-               [d["start_idx"]:d["end_idx"]] != d["sequence"]]
+        # CDR boundary validation.
+        #
+        # The previous check compared dom[s0:s1] against a value DEFINED as dom[s0:s1] --
+        # a tautology that could never fire. Shifting every CDR boundary by +3 passed it.
+        #
+        # Real check: we diffuse ONLY the CDRs, so every non-CDR position must still be
+        # the hu4D5-8 framework verbatim. If a boundary is wrong, designed residues leak
+        # into the framework mask and the comparison breaks. That is an independent test
+        # of the boundaries, not a restatement of them.
+        bad = check_framework_outside_cdrs(ex)
         if bad:
             quarantined += 1
-            log(f"  [quarantine] {cid}: CDR slice mismatch {bad}")
+            log(f"  [quarantine] {cid}: CDR boundaries inconsistent with the fixed "
+                f"framework -- {bad}")
             continue
 
         sc = read_scores(p)
@@ -391,6 +433,37 @@ def self_test():
           arm_of("/x/out/pilot/E1_n2/3_rf2/y.pdb") == "E1")
     check("arm_of: returns None when no arm is present",
           arm_of("/x/out/other/b000/3_rf2/y.pdb") is None)
+    # The boundary check must CATCH a shift. The fixture needs DESIGNED CDRs that differ
+    # from the framework -- using the bare framework as the "design" means a shifted
+    # boundary still compares framework against framework and nothing is detected.
+    def with_designed_cdrs(fw, spans):
+        out = list(fw)
+        for a, b in spans:
+            for i in range(a, b):
+                out[i] = "W" if fw[i] != "W" else "G"   # guaranteed different
+        return "".join(out)
+
+    vh_d = with_designed_cdrs(FRAMEWORK_VH, [(25, 32), (98, 105)])
+    vl_d = with_designed_cdrs(FRAMEWORK_VL, [(23, 34), (88, 97)])
+    real = {"vh": vh_d, "vl": vl_d,
+            "cdr_definitions": {"H1": {"chain": "VH", "start_idx": 25, "end_idx": 32,
+                                       "sequence": FRAMEWORK_VH[25:32]},
+                                "H3": {"chain": "VH", "start_idx": 98, "end_idx": 105,
+                                       "sequence": FRAMEWORK_VH[98:105]},
+                                "L1": {"chain": "VL", "start_idx": 23, "end_idx": 34,
+                                       "sequence": FRAMEWORK_VL[23:34]},
+                                "L3": {"chain": "VL", "start_idx": 88, "end_idx": 97,
+                                       "sequence": FRAMEWORK_VL[88:97]}}}
+    check("framework check: correct boundaries on the real framework pass",
+          check_framework_outside_cdrs(real) == [])
+    shifted = {k: (v if k != "cdr_definitions" else
+                   {kk: dict(vv, start_idx=vv["start_idx"] + 3, end_idx=vv["end_idx"] + 3)
+                    for kk, vv in v.items()}) for k, v in real.items()}
+    check("framework check: a +3 boundary shift is CAUGHT (the old check was a tautology)",
+          check_framework_outside_cdrs(shifted) != [])
+    truncated = dict(real, vh="KKKK" + vh_d[4:])
+    check("framework check: a corrupted framework N-terminus is caught",
+          check_framework_outside_cdrs(truncated) != [])
     check("schema: candidates.tsv has every spec column",
           all(c in COLUMNS for c in
               ["candidate_id", "epitope_arm", "framework", "generator", "vh_seq",

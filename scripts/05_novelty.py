@@ -170,11 +170,16 @@ def fast_identity(a, b, denom="max"):
     return best / d if d else 0.0
 
 
-def nearest_by_identity(query, candidates, topk=12, denom="max"):
+def nearest_by_identity(query, candidates, topk=60, denom="max"):
     """(best_exact_identity, best_key) over `candidates` = [(key, seq), ...].
 
     Shortlists with fast_identity, then runs exact NW identity on the top `topk`.
-    Exact where it matters (the nearest hit) and cheap where it does not.
+
+    topk was 12, which UNDER-REPORTED the nearest hit: gapped NW identity can exceed the
+    ungapped shortlist score, so a reference ranked below the cut can be the true nearest.
+    Measured against an exhaustive sweep of all 1076 references, 2 of 20 selected designs
+    had a too-low value (0.3846 -> 0.4167; 0.4444 -> 0.5000), an under-report of up to
+    0.056 while the margin to the 0.70 hard gate was only 0.033. Raised to 60.
     """
     if not query:
         return 0.0, None
