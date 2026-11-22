@@ -385,7 +385,22 @@ def select(rows, n_select=N_SELECT, arm_targets=None, verbose=True):
 
     chosen, per_arm, per_cluster = [], {a: 0 for a in arm_targets}, {}
 
+    taken_h3 = set()
+
+    def h3_seq(r):
+        try:
+            return json.loads(r["cdr_definitions_json"])["H3"]["sequence"]
+        except Exception:
+            return None
+
     def take(r, why):
+        # Never ship two designs with an IDENTICAL CDR-H3. The clustering cut (70%) lets
+        # exact twins through when their other CDRs differ: the selected 20 contained
+        # VGGRDY twice and VGGLDY twice. GenScript screens for "duplicate, highly
+        # similar" submissions, and two identical paratope loops waste a slot.
+        h = h3_seq(r)
+        if h:
+            taken_h3.add(h)
         chosen.append(r)
         per_arm[r["epitope_arm"]] = per_arm.get(r["epitope_arm"], 0) + 1
         per_cluster[r["cluster_id"]] = per_cluster.get(r["cluster_id"], 0) + 1
@@ -399,7 +414,7 @@ def select(rows, n_select=N_SELECT, arm_targets=None, verbose=True):
                 continue
             if per_arm.get(arm, 0) >= arm_targets[arm] or len(chosen) >= n_select:
                 break
-            if r["cluster_id"] in seen_clusters:
+            if r["cluster_id"] in seen_clusters or h3_seq(r) in taken_h3:
                 continue
             seen_clusters.add(r["cluster_id"])
             take(r, f"best unrepresented CDR-H3 cluster in {arm}")
@@ -412,6 +427,8 @@ def select(rows, n_select=N_SELECT, arm_targets=None, verbose=True):
             if r in chosen or r["epitope_arm"] != arm:
                 continue
             if per_cluster.get(r["cluster_id"], 0) >= MAX_PER_CLUSTER:
+                continue
+            if h3_seq(r) in taken_h3:
                 continue
             take(r, f"fills {arm} target, cluster under the cap")
 
@@ -427,6 +444,8 @@ def select(rows, n_select=N_SELECT, arm_targets=None, verbose=True):
                 continue
             if per_cluster.get(r["cluster_id"], 0) >= MAX_PER_CLUSTER:
                 continue
+            if h3_seq(r) in taken_h3:
+                continue
             take(r, "arm targets relaxed; cluster cap still honoured")
     if len(chosen) < n_select:
         log(f"[select] {len(chosen)}/{n_select} -- relaxing the CLUSTER CAP "
@@ -434,7 +453,7 @@ def select(rows, n_select=N_SELECT, arm_targets=None, verbose=True):
         for r in pool:
             if len(chosen) >= n_select:
                 break
-            if r not in chosen:
+            if r not in chosen and h3_seq(r) not in taken_h3:
                 take(r, "cluster cap relaxed")
 
     for r in chosen:
@@ -632,6 +651,18 @@ def self_test():
     cids = {r["cluster_id"] for r in sel_d}
     check("select: near-duplicate CDR sets off one backbone share a cluster",
           len(cids) < 3)
+
+    twins = []
+    for i in range(6):
+        h = "VGGRDY" if i < 3 else "QKLRPTVWMD"
+        r = mk(i, "E1", h, 5.0 + i * 0.1)
+        r["cdr_definitions_json"] = json.dumps(
+            {"H3": {"sequence": h}, "L3": {"sequence": "AAAA" + "ACDEFG"[i]}})
+        twins.append(r)
+    sel_t, _ = select([dict(r) for r in twins], n_select=20, verbose=False)
+    seqs = [json.loads(r["cdr_definitions_json"])["H3"]["sequence"] for r in sel_t]
+    check("select: never ships two designs with an IDENTICAL CDR-H3",
+          len(seqs) == len(set(seqs)))
 
     print(f"\nself-test: {sum(ok)}/{len(ok)} passed")
     return all(ok)
