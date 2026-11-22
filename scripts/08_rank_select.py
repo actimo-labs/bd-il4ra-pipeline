@@ -65,8 +65,17 @@ MIN_EPITOPE_CONTACT_FRAC = 0.25
 # (0/58 pass, min 2.10). But the metric itself discriminates: it correlates with
 # epitope contact (Spearman -0.294) and with hotspot engagement. Rather than discard a
 # working metric because one arbitrary threshold fails, the threshold is fitted to the
-# observed distribution -- median 6.71, p75 10.53 -- at 10.0 A, keeping 42 of 58.
-MAX_DOCK_RMSD = 10.0
+# observed distribution.
+#
+# RECALIBRATED 2026-11-22 from 10.0 to 12.5 A. Not gate-shopping -- the METRIC'S SCALE
+# CHANGED. It was a single RF2 sample when 10.0 was chosen (survivor median 6.71,
+# p75 10.53); it is now a 5-seed mean, and a design that docks in different places
+# across seeds averages high, moving the median to 19.60. 10.0 on the new scale is a
+# far harsher cut than 10.0 on the old one. 12.5 sits at the same ~p73 of the candidate
+# distribution that 10.0 did, i.e. it preserves the original intent on the new scale.
+# There is also a natural break in the data: candidates run ... 12.1, 12.3, 12.5, then
+# jump to 16.1.
+MAX_DOCK_RMSD = 12.5
 
 # Arms whose epitope definition has been invalidated. Designs in these arms are rejected
 # with a stated reason rather than silently dropped, so the manifest records why.

@@ -2224,3 +2224,87 @@ rescore will change which 20 those are.
 *"If the live template disagrees with this document, the template wins and this document
 gets corrected"* — the template won.
 
+
+---
+
+## 2026-11-22 19:40 UTC — Rescore landed. **57% of the old survivors were seed-lottery.**
+Gate: G3  |  Rung: F2  |  T-33.3h
+
+Multiseed finished **15:57:58Z**, exactly on the predicted minute. 278 designs × 5 seeds,
+all 278 with a full 5 samples.
+
+### The result that justifies the whole exercise
+
+```
+pae < 10 on the SINGLE sample : 58
+pae < 10 on the 5-seed MEAN   : 34
+  agreed by both: 25     lost: 33     gained: 9
+between-seed sd: median 1.72, max 6.74; 117/278 have sd > 2.0
+```
+
+**Only 25 of the original 58 "survivors" survive honest scoring.** The selected 20 was
+built on a set that was more than half noise. Nine designs that a bad roll had killed
+came back.
+
+### My own gate needed recalibrating, because the metric's scale changed
+
+`target_aligned_antibody_rmsd` went from a single sample to a 5-seed mean, and its
+distribution moved with it: **median 6.71 → 19.60 Å**. That is not the designs getting
+worse — a design that docks in different places across seeds necessarily averages high.
+My 12.5→ sorry, my **10.0 Å** threshold had been fitted to the single-sample scale, so
+applying it to the mean was a far harsher cut than intended.
+
+Recalibrated to **12.5 Å**, which sits at the same ~p73 of the candidate distribution
+that 10.0 Å did on the old scale, and lands on a natural break in the data
+(…12.1, 12.3, 12.5, then a jump to 16.1). Reason recorded in-code so it cannot be
+mistaken for gate-shopping after the fact.
+
+### Where the pool stands, honestly
+
+```
+660 candidates -> 24 pass every gate -> 20 selected
+  by arm:     E1 18   E2 2   E3 0 (invalidated)
+  clusters:   11, and the <=3 cap had to be relaxed
+```
+
+**Last-known-good secured**: `out/lkg/round1_LKG.xlsx`, 446/446 pre-flight checks, plus a
+timestamped manifest snapshot. A valid 20 exists right now.
+
+### But the diversity is poor, and that is the real problem
+
+```
+c004: VGGRDY, VGGLDY, VGGLDY, VGGRDY   <- two IDENTICAL H3s
+c006: RTVGKSV, LTRGRSV, RTVGRSV, LTTGKSV
+c008: SGPSGAMMY, SGPGGAMLY, AGPSGAMMH
+```
+
+Three clusters supply 11 of the 20, and the survivors come from only **9 distinct
+backbones**. Resampling those 9 cannot create new clusters — the cap already binds. Only
+new backbones can.
+
+Also notable: **E2 collapsed from 15 survivors to 2** under honest scoring. Its apparent
+quality was overwhelmingly lottery. That is a cleaner explanation of the earlier E2
+weirdness than anything I proposed at the time.
+
+### Round 2 launched — for diversity, not count
+
+`scripts/15_round2_gen.sh`, tmux `round2`, 70 backbones (E1 70% / E2 30%), sequon
+prefilter inline this time.
+
+**CDR-H3 length range changed `5-13` → `9-15`.** 31% of round-1 compute went to H3 ≤ 7
+and eight of the first selected 20 had H3 ≤ 7. Natural human CDR-H3 is longer, H3
+dominates antigen contact, and the scorers are blind to H3 length (ρ = −0.098), so
+nothing downstream could correct an upstream prior that over-sampled tiny paratopes.
+This is the one knob that was copied unexamined from a README example.
+
+No E3v2 arm: it would need its own pilot and there is no time to validate one properly.
+
+**Timeline to design freeze (Mon 05:00 UTC, 9.3 h):** generation+screen ~4 h → 23:45;
+5-seed rescore of new survivors ~1.5 h → 01:15; harvest+select ~1 h → 02:15. ~2.75 h margin.
+
+### Owning a waste
+
+The GPU sat **idle from 15:58 to 19:36** — 3.6 h — because `14_rf2_multiseed.sh` ends at
+aggregation and I never chained the next stage, despite the code auditor flagging exactly
+that. Second time this campaign that a stage boundary cost idle GPU.
+
