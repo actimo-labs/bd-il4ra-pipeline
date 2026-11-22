@@ -51,6 +51,12 @@ THRESH = {
 
 MIN_REF_CDRH3 = 5   # shorter transferred H3s are alignment artefacts, not CDRs
 
+# True  = RANKING_AND_QC.md s4 verbatim: >0.85 full identity to an anti-IL-4Ra antibody
+#         is a hard fail on its own.
+# False = intent-based reading: only a hard fail when the CDRs are ALSO similar.
+# A/B tested over 660 real designs 2026-11-22: identical outcome. Default to the spec.
+STRICT_SPEC_FULL_IDENTITY = True
+
 REFS = {
     "6WGL": {"H": "A", "L": "B", "name": "dupilumab", "target_chain": "C",
              "note": "canonical anti-IL-4Ralpha therapeutic (Dupixent)"},
@@ -428,8 +434,20 @@ def screen_design(vh, vl, cdrs, ref):
     # standardised frameworks are expected. So the gate's real target is derivation of
     # BOTH framework and CDRs. It hard-fails only when high full identity is accompanied
     # by CDR similarity; otherwise it records a flag with the explanation.
+    # REVERTED TO THE LITERAL SPEC on 2026-11-22 after an A/B test over all 660 real
+    # designs showed the modification changes NOTHING: both readings give 651 pass /
+    # 9 fail, and zero designs differ. My earlier alarm -- that the literal gate "fails
+    # 100% of our designs" -- was an extrapolation from the BARE framework (hu4D5-8 VL
+    # is 0.860 against 6OEL) that the real data does not support: designing six CDRs
+    # pulls the maximum observed full identity down to 0.827, under the 0.85 threshold.
+    #
+    # Since the modification buys nothing on this pool, the literal spec wins: it is one
+    # fewer deviation to defend to GenScript. STRICT_SPEC_FULL_IDENTITY=False restores
+    # the intent-based reading if a future pool ever does exceed 0.85 on framework alone.
+    #
+    # Margin is thin: 0.827 observed vs 0.850 threshold. Re-run the A/B if the pool changes.
     if best_full["identity"] > THRESH["il4ra_full_identity_max"]:
-        if best_concat["identity"] > THRESH["cdr_concat_identity_max"]:
+        if STRICT_SPEC_FULL_IDENTITY or best_concat["identity"] > THRESH["cdr_concat_identity_max"]:
             fails.append(
                 f"full {best_full['chain']} identity {best_full['identity']:.2f} > "
                 f"{THRESH['il4ra_full_identity_max']} vs anti-IL-4Ra {best_full['ref']} "
@@ -440,8 +458,7 @@ def screen_design(vh, vl, cdrs, ref):
                 f"full {best_full['chain']} identity {best_full['identity']:.2f} > "
                 f"{THRESH['il4ra_full_identity_max']} vs anti-IL-4Ra {best_full['ref']}, "
                 f"but concatenated-CDR identity is only {best_concat['identity']:.2f} "
-                f"-- shared germline framework, not scaffold derivation. "
-                f"[MODIFIED GATE: see note in screen_design()]")
+                f"-- shared germline framework, not scaffold derivation.")
 
     return {
         "novelty_status": "fail" if fails else ("flag" if flags else "pass"),
@@ -511,12 +528,25 @@ def self_test():
     novel = screen_design(HU4D5_VH, HU4D5_VL,
                           {"H1": "GFDLTNV", "H2": "NPISGK", "H3": "SGFGVRSLHH",
                            "L1": "KLSKPAEVS", "L2": "KSTIRAP", "L3": "SAYDRLTGLT"}, ref)
-    check("screen: genuinely different CDRs on the SAME framework are NOT a hard fail "
-          "(the brief expects a standardised framework)",
-          novel["novelty_status"] != "fail")
-    check("screen: shared framework with novel CDRs is reported as a FLAG, not silently",
+    # Under the spec-literal default a 100%-identical framework IS a hard fail, which is
+    # what the spec asks for. The intent-based branch is tested by flipping the flag.
+    import builtins as _b
+    global STRICT_SPEC_FULL_IDENTITY
+    _saved = STRICT_SPEC_FULL_IDENTITY
+    STRICT_SPEC_FULL_IDENTITY = True
+    strict = screen_design(HU4D5_VH, HU4D5_VL,
+                           {"H1": "GFDLTNV", "H2": "NPISGK", "H3": "SGFGVRSLHH",
+                            "L1": "KLSKPAEVS", "L2": "KSTIRAP", "L3": "SAYDRLTGLT"}, ref)
+    check("spec-literal mode: >0.85 full identity alone IS a hard fail",
+          strict["novelty_status"] == "fail")
+    STRICT_SPEC_FULL_IDENTITY = False
+    novel = screen_design(HU4D5_VH, HU4D5_VL,
+                          {"H1": "GFDLTNV", "H2": "NPISGK", "H3": "SGFGVRSLHH",
+                           "L1": "KLSKPAEVS", "L2": "KSTIRAP", "L3": "SAYDRLTGLT"}, ref)
+    check("intent mode: novel CDRs on a shared framework are flagged, not failed",
           novel["novelty_status"] == "flag"
           and any("shared germline framework" in f for f in novel["novelty_flags"]))
+    STRICT_SPEC_FULL_IDENTITY = _saved
     check("screen: novelty is judged on CDRs, not the shared framework "
           "(full VH identity is ~1.0 yet it is not a fail)",
           novel["nearest_il4ra_identity"] > 0.9 or novel["novelty_status"] != "fail")

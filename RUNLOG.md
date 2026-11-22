@@ -1970,3 +1970,90 @@ current 20. Written for the methodology-by-email scenario and for whoever picks 
 5. **E3 has only 4 survivors for 3 slots** — zero selection margin.
 6. **Boltz sd median 0.110, max 0.262** across 5 samples — several predictions unstable.
 
+
+---
+
+## 2026-11-22 07:00–07:25 UTC — **RF2 is a coin flip near the threshold.** Multi-seed re-score launched
+Gate: G3  |  Rung: F0  |  T-45.9h
+
+### The finding: our ranking metric is not reproducible
+
+Before spending GPU on multi-seed re-scoring I checked the premise — does RF2 actually
+vary? **Same input sequence, same target, same 10 recycles, five independent runs:**
+
+```
+design                 noseed-1  noseed-2  seed101  seed202   spread
+E1_b007_3_dldesign_9       4.26     16.21     4.03     5.35    12.18
+E1_b008_9_dldesign_13      4.42     14.76    14.83     3.95    10.88
+E1_b002_4_dldesign_8       4.90     13.17    13.68    14.82     9.92
+E1_b000_3_dldesign_11      6.82     13.79     7.31    12.62     6.97
+E1_b010_6_dldesign_0      13.97     14.12    13.21    14.51     1.30
+```
+
+**Four of five straddle the `interaction_pae < 10` gate.** Our #1-ranked design records
+7.21 in the manifest and re-folds to 13.99 and 14.54. RF2 is stochastic **even without
+an explicit seed** (`noseed-1` vs `noseed-2` differ by 7–12 units).
+
+**So the 58 "survivors" and the selected 20 are substantially a seed lottery.** A design
+sitting near the boundary passed or failed on which run happened to be done.
+
+Two things stop this being nihilism:
+
+- The last row is consistently bad across all five runs (13.2–14.5, spread 1.3). The
+  metric is **not** pure noise — it reliably identifies consistently-poor designs. It
+  just needs averaging to separate the middle of the distribution.
+- This is precisely `PIPELINE.md` §3 rule 1 (between-seed ρ **+0.239 at 1 sample** vs
+  **+0.846 at 5**). I flagged single-sample RF2 as a gap in the morning brief; I
+  underestimated how severe it is.
+
+### Re-score launched — 278 designs × 5 seeds, 9.31 GPU-h
+
+`scripts/14_rf2_multiseed.sh`, tmux session **`rescore`**, started 07:10:50Z, ETA
+~16:30 UTC. Design freeze is Mon 05:00 UTC, so there is ~12 h of margin.
+
+**Scope deliberately includes designs that FAILED the pae gate on their single roll** —
+those are exactly the ones an unlucky roll may have wrongly killed. 278 designs pass
+every hard gate *except* pae; **172 of them sit in the 10–16 band** that a better roll
+could plausibly rescue.
+
+`collect_rescore_inputs.py` caught **10 filename collisions** between round-1 and
+resample inputs. RF2 keys its outputs on the input filename, so without the rename those
+10 would have silently overwritten each other and the scores would have been attributed
+to the wrong designs. The collector now refuses to proceed if the copied count and the
+on-disk count disagree.
+
+`aggregate_multiseed.py` will put the **mean** into `rf2_iface_hl_vs_t` (what ranking
+reads), preserve the original in `rf2_iface_single_sample`, and record `rf2_iface_sd`
+so a design that swings wildly is visible as weak even when its mean looks good.
+It asserts a non-empty full-id join before writing. A pre-multiseed snapshot of
+`candidates.tsv` is in `out/lkg/`.
+
+### **Correction: my novelty-gate alarm was overstated**
+
+The user asked me to test whether the modified novelty gate actually improves the 20.
+A/B over **all 660 real designs**:
+
+```
+MODIFIED gate (intent-based):  651 pass,  9 fail
+LITERAL spec gate:             651 pass,  9 fail
+designs that differ:           0
+```
+
+**They are identical on real data.** My earlier claim — that the literal gate "fails
+100% of our designs" and would have killed the submission silently — was an
+**extrapolation from the bare framework that the data does not support**. hu4D5-8's VL
+is indeed 0.860 against 6OEL's VL, but that is the framework *before* any CDR is
+designed. Replacing six CDRs pulls the maximum observed full identity across the pool
+down to **0.827**, under the 0.85 threshold.
+
+**Reverted to the literal spec as the default** (`STRICT_SPEC_FULL_IDENTITY = True`).
+Since the modification buys nothing here, the spec wins — it is one fewer deviation to
+defend to GenScript in January. The intent-based branch is kept behind the flag and
+still self-tested, because the margin is thin (**0.827 observed vs 0.850 threshold**)
+and a future pool could genuinely exceed it on framework alone.
+
+The lesson is the one I keep relearning tonight: **I measured a proxy (the framework)
+and reasoned about the real thing (the designs) without checking.** Same error shape as
+the identity-denominator bug, just in the opposite direction — there I was too lax, here
+too alarmed.
+
