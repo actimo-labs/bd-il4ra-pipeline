@@ -22,13 +22,13 @@ run() {  # run <interpreter> <script>
 }
 echo "=== self-test regression gate $(date -u +%FT%TZ) ==="
 echo "-- stdlib (bare python3, no env) --"
-for s in scripts/qc_liabilities.py scripts/05_novelty.py scripts/08_rank_select.py scripts/build_submission.py; do
+for s in scripts/qc_liabilities.py scripts/05_novelty.py scripts/08_rank_select.py; do
   run python3 "$s"
 done
 echo "-- boltz env (numpy/biopython) --"
 for s in scripts/01_target_prep.py scripts/02_epitopes.py scripts/03_crop_hlt.py \
          scripts/04_interface.py scripts/06_harvest.py scripts/07_prefilter.py \
-         scripts/09_boltz_crosscheck.py; do
+         scripts/09_boltz_crosscheck.py scripts/build_submission.py; do
   run "$CONDA run -n boltz python" "$s"
 done
 echo "-- shell syntax --"
