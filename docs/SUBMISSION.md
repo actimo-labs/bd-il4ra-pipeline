@@ -11,39 +11,80 @@ and re-upload. Do not discover that at T−1h.
 
 ## 1. What actually gets submitted
 
-Despite the brief's prose asking for "full amino acid sequence of the heavy chain", the
-**batch template takes variable domains and assembles the rest**:
+> **CORRECTED 2026-11-22 against the real template.** The section below originally
+> described a five-column sheet with `CL Type` = "human kappa". **That was wrong in four
+> ways and would have been rejected.** The authoritative file is
+> `docs/TurboCHO_IgG_AA_Seperate_Region.xlsx`
+> (sha256 `b6f59ebc00728dbb20173fd7737da800b0e05465ed65fdaab22eb1e1b209f751`),
+> archived in this repo. Per §2 of this document, **the template wins.**
 
-| Column | What goes in it |
-|---|---|
-| `Antibody name` | Our candidate ID |
-| `VH Seq` | **VH variable domain only** |
-| `CH Type` | Dropdown: **Human IgG1** or Human IgG4 |
-| `VL Seq` | **VL variable domain only** |
-| `CL Type` | Dropdown — **must match the light-chain class of your VL** |
-| `CH Seq` | **Leave alone. Autofills from `CH Type`.** |
+The template is `TurboCHO_IgG_AA_Seperate_Region.xlsx`. It has **two sheets**:
+
+- **`IgG Seperate Region`** — the data sheet (note GenScript's spelling of "Seperate";
+  match it exactly). Rows 2–961 are available.
+- **`Constant Region Seq`** — the lookup table the auto-fill formulas and the dropdowns
+  both point at. **It must survive into the submitted file.**
+
+### The eight columns, in order
+
+| # | Column header (exact) | What goes in it |
+|---|---|---|
+| A | `Antibody #` | **FORMULA — do not type.** `=IF(B2="","",COUNTA($B$2:B2))` |
+| B | `Antibody Name` | Our candidate ID. **Capital N** |
+| C | `VH Seq` | **VH variable domain only** |
+| D | `CH Type` | Dropdown, see below |
+| E | `CH Seq (Auto-fill)` | **FORMULA — do not type.** `VLOOKUP` on `CH Type` |
+| F | `VL Seq` | **VL variable domain only** |
+| G | `CL Type` | Dropdown, see below |
+| H | `CL Seq (Auto-fill)` | **FORMULA — do not type.** `VLOOKUP` on `CL Type` |
+
+### The dropdown values — these are the exact strings
+
+Read from the data-validation ranges in the template, not from prose:
+
+- **`CH Type`** (validation `D2:D961` → `'Constant Region Seq'!$A$3:$A$5`):
+  `Human IgG1` · `Human IgG4` · `Rabbit IgG`
+- **`CL Type`** (validation `G2:G961` → `'Constant Region Seq'!$D$3:$D$6`):
+  **`Human Ig Kappa`** · `Human Ig Lambda` · `Rabbit Ig Kappa` · `Rabbit Ig Lambda`
+
+> **`Human Kappa` IS NOT A VALID VALUE.** The correct string is **`Human Ig Kappa`**.
+> This document specified the wrong one and `build_submission.py` hardcoded it; all 20
+> rows would have carried an invalid enum. `build_submission.py` now reads these lists
+> out of the template at runtime and has a regression test asserting `Human Kappa` is
+> rejected.
 
 > **Please enter ONLY your protein sequences – we will automatically add a signal peptide
 > `MGWSCIILFLVATATGVHS` for you.**
 
-Three ways to get this wrong, all fatal, all silent:
+### Fill the template; never generate your own workbook
 
-1. **Including a signal peptide.** GenScript prepends theirs. Two leaders = dead
+Building a fresh `.xlsx` with the right headers **loses the dropdowns, the auto-fill
+formulas, and the `Constant Region Seq` sheet those formulas depend on.** The result
+looks correct and is inert. `build_submission.py` opens the supplied template read-only,
+writes into a copy, retargets the row-2 formulas to each row (`B2`→`B7`, `$B$2` left
+absolute), clears the shipped `IgG Example  1` row, then **re-opens the output and
+verifies it** — deleting the file and exiting non-zero on any failure.
+
+### Five ways to get this wrong, all fatal, all silent
+
+1. **Wrong `CL Type` string.** `Human Kappa` ≠ `Human Ig Kappa`. See above.
+2. **Including a signal peptide.** GenScript prepends theirs. Two leaders = dead
    construct. Hard-gated by the eligibility screen (`RANKING_AND_QC.md` §2).
-2. **Including constant domains in `VH Seq` / `VL Seq`.** `CH Type` supplies CH. A VH
-   field containing VH+CH1 produces a duplicated constant region.
-3. **`CL Type` not matching the VL class.** Both planned frameworks (hu-4D5-8 and
-   IGKV1-39 germline) have **kappa** light chains, so `CL Type` = **human kappa**. A
-   kappa VL fused to a lambda CL is a mismatched chimera. Verify per design, not once.
+3. **Including constant domains in `VH Seq` / `VL Seq`.** `CH Type` supplies CH. A VH
+   field containing VH+CH1 produces a duplicated constant region. `build_submission.py`
+   detects the CH1/CL N-terminal motifs and applies a length ceiling.
+4. **Typing values into the auto-fill columns** instead of leaving the formulas.
+5. **Dropping the `Constant Region Seq` sheet**, which silently breaks every auto-fill.
 
 ### Recommended constant regions
 
-- **`CH Type` = Human IgG1** for all 20. Not a judgement call: the live challenge hub
+- **`CH Type` = `Human IgG1`** for all 20. Not a judgement call: the live challenge hub
   states the design format as **IgG1**, and the brief's own opening prompt says "human
-  IgG1 format". The dropdown offers IgG4 as well — IgG4 exists for reduced effector
-  function, which is irrelevant to Carterra LSA. **Do not use it.** Keep all 20 identical
-  so the assay compares paratopes, not isotypes.
-- **`CL Type` = human kappa**, matched to the VL framework.
+  IgG1 format". The dropdown offers IgG4 — that exists for reduced effector function,
+  irrelevant to Carterra LSA. **Do not use it.** Keep all 20 identical so the assay
+  compares paratopes, not isotypes.
+- **`CL Type` = `Human Ig Kappa`**, matched to the VL framework. hu-4D5-8 is kappa.
+  A kappa VL fused to a lambda CL is a mismatched chimera. Verified per row, not once.
 
 ### Candidate naming
 
@@ -68,9 +109,14 @@ in January, this ID is the only thing linking a lab result back to a design.
 
 ```bash
 # the two modules you author; see CLAUDE.md section 10
-python3 scripts/qc_liabilities.py   --manifest candidates.tsv --selected-only --strict
-python3 scripts/build_submission.py --manifest candidates.tsv --out submission/round1.xlsx \
-        --ch-type "Human IgG1" --cl-type "Human Kappa" --expect 20
+# build_submission.py needs openpyxl -> run it in the boltz env, not bare python3
+bash scripts/00_run_all_selftests.sh          # expect "20/20 modules clean"
+
+~/miniforge3/bin/conda run -n boltz python scripts/build_submission.py \
+    --manifest candidates.tsv \
+    --template docs/TurboCHO_IgG_AA_Seperate_Region.xlsx \
+    --out submission/round1.xlsx \
+    --ch-type "Human IgG1" --cl-type "Human Ig Kappa" --expect 20 --rename
 
 # build_submission.py MUST exit non-zero and write nothing if any check below fails.
 # A builder that writes a file "with warnings" will get a bad file submitted at 3am.
@@ -83,7 +129,10 @@ python3 scripts/build_submission.py --manifest candidates.tsv --out submission/r
 - [ ] No constant-domain residues in `VH Seq` / `VL Seq`
 - [ ] Alphabet: 20 standard amino acids only. No `X B Z J U O *`, no digits, no spaces, no lowercase, **no trailing whitespace** (a trailing space is the classic silent validator failure)
 - [ ] **Exactly 2 Cys per variable domain** on every design
-- [ ] `CH Type` identical on all rows; `CL Type` matches each VL's class
+- [ ] `CH Type` = `Human IgG1` on all rows; `CL Type` = `Human Ig Kappa` on all rows
+- [ ] Columns A / E / H still contain FORMULAS, not pasted values
+- [ ] The `Constant Region Seq` sheet is still present in the submitted file
+- [ ] The shipped `IgG Example  1` row is gone
 - [ ] Every row passes the novelty screen (`RANKING_AND_QC.md` §4)
 - [ ] Final 20 are diversity-spread across arms / frameworks / generators as selected
 - [ ] `candidates.tsv` complete, every uncomputed metric literally `not_run`
